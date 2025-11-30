@@ -1,0 +1,45 @@
+{
+  "name": "kadwood-transparency-engine",
+  "private": true,
+  "sideEffects": false,
+  "type": "module",
+  "scripts": {
+    "build": "remix build",
+    "dev": "remix dev --manual -c \"npm run start\"",
+    "start": "wrangler dev ./build/index.js",
+    "test": "vitest run",
+    "setup:local": "wrangler d1 execute kadwood-db --local --file=app/db/schema.sql && wrangler d1 execute kadwood-db --local --file=app/db/seed.sql"
+  },
+  "dependencies": {
+    "@cloudflare/kv-asset-handler": "^0.4.1",
+    "@react-pdf/renderer": "^3.4.5",
+    "@remix-run/cloudflare": "^2.0.0",
+    "@remix-run/cloudflare-pages": "^2.0.0",
+    "@remix-run/react": "^2.0.0",
+    "@shopify/app-bridge-react": "^4.0.0",
+    "@shopify/polaris": "^12.0.0",
+    "@shopify/shopify-app-remix": "^2.0.0",
+    "@shopify/shopify-app-session-storage-memory": "^2.0.0",
+    "browserify-zlib": "^0.2.0",
+    "crypto-browserify": "^3.12.1",
+    "isbot": "^4.1.0",
+    "node-buffer": "npm:buffer@^6.0.3",
+    "node-events": "npm:events@^3.3.0",
+    "node-url": "npm:url@^0.11.4",
+    "path-browserify": "^1.0.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "stream-browserify": "^3.0.0"
+  },
+  "devDependencies": {
+    "@remix-run/dev": "^2.0.0",
+    "@remix-run/eslint-config": "^2.0.0",
+    "@shopify/app": "^3.50.0",
+    "eslint": "^8.38.0",
+    "vitest": "^1.0.0",
+    "wrangler": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

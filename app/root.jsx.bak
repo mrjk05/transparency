@@ -1,0 +1,45 @@
+```
+import {
+    Links,
+    LiveReload,
+    Meta,
+    Outlet,
+    Scripts,
+    ScrollRestoration,
+    useLoaderData,
+} from "@remix-run/react";
+import { json } from "@remix-run/cloudflare";
+// import { AppProvider } from "@shopify/shopify-app-remix/react";
+import polarisStyles from "@shopify/polaris/build/esm/styles.css";
+
+export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
+
+export const loader = async ({ context }) => {
+  return json({
+    apiKey: context.cloudflare.env.SHOPIFY_API_KEY,
+    isMockMode: context.cloudflare.env.MOCK_MODE === "true",
+  });
+};
+
+export default function App() {
+    const { apiKey, isMockMode } = useLoaderData();
+    return (
+        <html lang="en">
+            <head>
+                <meta charSet="utf-8" />
+                <meta name="viewport" content="width=device-width,initial-scale=1" />
+                <Meta />
+                <Links />
+            </head>
+            <body>
+                {/* <AppProvider isEmbeddedApp={!isMockMode} apiKey={apiKey}> */}
+                    <Outlet />
+                {/* </AppProvider> */}
+                <ScrollRestoration />
+                <Scripts />
+                <LiveReload />
+            </body>
+        </html>
+    );
+}
+```

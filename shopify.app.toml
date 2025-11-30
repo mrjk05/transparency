@@ -1,0 +1,16 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "SHOPIFY_API_KEY"
+name = "Kadwood Transparency Engine"
+application_url = "https://kadwood-transparency.jins.workers.dev"
+embedded = true
+
+[access_scopes]
+# Scopes needed for the app
+scopes = "write_products,read_products,write_orders,read_orders"
+
+[webhooks]
+api_version = "2024-01"
+
+[pos]
+embedded = false

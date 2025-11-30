@@ -1,0 +1,8 @@
+node_modules
+.DS_Store
+.env
+build
+public/build
+.wrangler
+.cache
+package-lock.json
