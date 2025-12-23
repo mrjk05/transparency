@@ -22,19 +22,22 @@ import {
     LegacyStack
 } from "@shopify/polaris";
 import { SearchIcon, InfoIcon, CheckIcon, AlertCircleIcon } from "@shopify/polaris-icons";
-import { SCORING_CONFIG } from "../config/scoring";
+import { SCORING_CONFIG, MATERIAL_CERTIFICATIONS } from "../config/scoring";
 import { calculateRoute, haversineDistance, getEmissionFactor, LOCATIONS } from "../utils/emissions"; // Assuming haversineDistance and getEmissionFactor are now imported or defined elsewhere
 
 export function TransparencyWizard({
     suppliers = [],
     lineItems = [],
+    orderDetails = null,
+    initialFormData = null,
     onFetchCollections,
     onSubmit,
     isSubmitting
 }) {
-    // State for form data
-    const [formData, setFormData] = useState({
-        shopify_order_id: "",
+    // State for form data - use initialFormData if provided (editing existing report)
+    const [formData, setFormData] = useState(initialFormData || {
+        shopify_order_id: orderDetails?.name || "",
+        customer_name: orderDetails?.customer?.displayName || "",
         shopify_line_item_id: "",
         suit_id: "",
         mill_id: "",
@@ -79,9 +82,7 @@ export function TransparencyWizard({
         { label: "Cotton", value: "Cotton" },
         { label: "Cashmere", value: "Cashmere" },
         { label: "Mohair", value: "Mohair" },
-        { label: "Vicuna", value: "Vicuna" },
-        { label: "Elastane", value: "Elastane" },
-        { label: "Polyamide", value: "Polyamide" }
+        { label: "Vicuna", value: "Vicuna" }
     ];
 
     // Helper to calculate score for a single question
@@ -107,6 +108,35 @@ export function TransparencyWizard({
 
         return 0;
     }, []);
+
+    // Sync material state with formData.composition on load
+    useEffect(() => {
+        if (formData.composition && formData.composition !== material) {
+            setMaterial(formData.composition);
+        }
+    }, [formData.composition]); // Only run when composition changes
+
+    // Fetch collections when mill_id changes (including auto-population)
+    useEffect(() => {
+        const millId = formData.mill_id;
+
+        if (millId && millId !== "") {
+            setLoadingCollections(true);
+            onFetchCollections(millId)
+                .then(fetchedCollections => {
+                    setCollections(fetchedCollections);
+                })
+                .catch(error => {
+                    console.error("Failed to fetch collections", error);
+                    setCollections([]);
+                })
+                .finally(() => {
+                    setLoadingCollections(false);
+                });
+        } else {
+            setCollections([]);
+        }
+    }, [formData.mill_id, onFetchCollections]);
 
     // Recalculate scores whenever formData changes
     useEffect(() => {
@@ -212,11 +242,35 @@ export function TransparencyWizard({
         }
     };
 
+    // Helper to get material-specific Pillar 1 questions
+    const getFilteredPillar1Questions = (material) => {
+        const pillar1 = SCORING_CONFIG.find(p => p.id === "pillar_1");
+        if (!pillar1) return [];
+
+        // Get material-specific certifications
+        const materialCerts = MATERIAL_CERTIFICATIONS[material] || [];
+
+        // Keep universal questions (chemistry, RSL, trims)
+        const universalQuestions = pillar1.questions.filter(q =>
+            ["p1_chemistry", "p1_rsl", "p1_trims"].includes(q.id)
+        );
+
+        // Create certification questions from material config
+        const certQuestions = materialCerts.map(cert => ({
+            id: `p1_${cert.id}`,
+            label: cert.label,
+            type: "checkbox",
+            options: [{ label: "Yes", value: "yes", points: cert.points }]
+        }));
+
+        return [...certQuestions, ...universalQuestions];
+    };
+
     // Helper to get primary location for a SINGLE material
     const getPrimaryLocation = (material) => {
         switch (material) {
             case "Wool": return { lat: -33.8688, lng: 151.2093, name: "New South Wales, Australia", country: "Australia" };
-            case "Silk": return { lat: 30.2672, lng: 120.1532, name: "Hangzhou, China", country: "China" };
+            case "Silk": return { lat: 45.8081, lng: 9.0852, name: "Como, Italy", country: "Italy" };
             case "Linen": return { lat: 49.6116, lng: 0.7234, name: "Normandy, France", country: "France" };
             case "Cotton": return { lat: 33.5731, lng: -101.8552, name: "Texas, USA", country: "USA" };
             case "Cashmere": return { lat: 43.8256, lng: 87.6168, name: "Xinjiang, China", country: "China" }; // Or Mongolia
@@ -295,11 +349,15 @@ export function TransparencyWizard({
         };
         setEmissionsData(newEmissionsData);
 
-        // Calculate Score based on distance (Example logic)
-        // < 15000km = 5 pts, < 20000km = 2 pts, else 0
+        // Calculate Score based on EMISSIONS (kg CO₂e) - aligned with GHG Protocol
+        // Best practice: <15 kg, Industry avg: 20-40 kg, Poor: >40 kg
         let score = 0;
-        if (newEmissionsData.totalDistance < 15000) score = 5;
-        else if (newEmissionsData.totalDistance < 20000) score = 2;
+        const emissions = parseFloat(newEmissionsData.emissionsKg);
+
+        if (emissions < 15) score = 5;       // Excellent - sea freight, regional sourcing
+        else if (emissions < 25) score = 3;   // Good - mixed sea/road transport
+        else if (emissions < 40) score = 1;   // Fair - some air freight
+        // else score = 0                     // Poor - heavy air freight use
 
         setFormData(prev => ({ ...prev, p4_co2_score: score }));
 
@@ -344,8 +402,16 @@ export function TransparencyWizard({
     };
 
     const handleSubmit = () => {
-        // Include emissions data in submission if needed, or just scores
-        onSubmit({ ...formData, emissions: emissionsData, composition: material }, scores);
+        // Explicitly include order details to ensure they're not lost
+        const submissionData = {
+            ...formData,
+            shopify_order_id: formData.shopify_order_id || orderDetails?.name || "",
+            customer_name: formData.customer_name || orderDetails?.customer?.displayName || "",
+            emissions: emissionsData,
+            composition: material
+        };
+
+        onSubmit(submissionData, scores);
     };
 
     const millOptions = [{ label: "Select a Mill", value: "" }, ...suppliers.filter(s => s.type === 'Mill').map(s => ({ label: s.name, value: String(s.id) }))];
@@ -354,6 +420,15 @@ export function TransparencyWizard({
 
     return (
         <BlockStack gap="500">
+            {/* Editing Indicator */}
+            {initialFormData && (
+                <Banner tone="info">
+                    <Text variant="bodyMd" as="p">
+                        <strong>Editing existing report</strong> - This order already has a transparency report. Your changes will update the existing report.
+                    </Text>
+                </Banner>
+            )}
+
             {/* Score Dashboard */}
             <Card>
                 <BlockStack gap="400">
@@ -393,13 +468,7 @@ export function TransparencyWizard({
                     <Text variant="headingMd" as="h2">Fabric Details</Text>
                     <Select
                         label="Material Composition"
-                        options={[
-                            { label: "Wool (Merino)", value: "Wool" },
-                            { label: "Cotton", value: "Cotton" },
-                            { label: "Silk", value: "Silk" },
-                            { label: "Linen", value: "Linen" },
-                            { label: "Blend", value: "Blend" }
-                        ]}
+                        options={materialOptions}
                         onChange={setMaterial}
                         value={material}
                     />
@@ -432,80 +501,93 @@ export function TransparencyWizard({
             </Card>
 
             {/* Pillars */}
-            {SCORING_CONFIG.map((pillar) => (
-                <Card key={pillar.id}>
-                    <BlockStack gap="400">
-                        <InlineStack gap="200" align="start" blockAlign="center">
-                            <Text variant="headingMd" as="h2">{pillar.title}</Text>
-                            <Tooltip content={pillar.description} dismissOnMouseOut>
-                                <Icon source={InfoIcon} tone="base" />
-                            </Tooltip>
-                        </InlineStack>
+            {SCORING_CONFIG.map((pillar) => {
+                // For Pillar 1, use material-specific questions
+                const questions = pillar.id === "pillar_1"
+                    ? getFilteredPillar1Questions(material)
+                    : pillar.questions;
 
-                        {/* Special Rendering for Climate Pillar CO2 */}
-                        {pillar.id === "pillar_4" && emissionsData && (
-                            <Box paddingBlockEnd="400">
-                                <BlockStack gap="400">
-                                    <Text variant="headingSm" as="h3">Supply Chain Journey (Editable)</Text>
+                return (
+                    <Card key={pillar.id}>
+                        <BlockStack gap="400">
+                            <InlineStack gap="200" align="start" blockAlign="center">
+                                <Text variant="headingMd" as="h2">{pillar.title}</Text>
+                                <Tooltip content={pillar.description} dismissOnMouseOut>
+                                    <Icon source={InfoIcon} tone="base" />
+                                </Tooltip>
+                            </InlineStack>
 
-                                    <LocationInput
-                                        label="1. Primary Production"
-                                        value={locationInputs.primary}
-                                        onChange={(v) => setLocationInputs(prev => ({ ...prev, primary: v }))}
-                                        onSearch={() => handleGeocode("primary", locationInputs.primary)}
-                                        loading={isGeocoding}
-                                    />
-                                    <LocationInput
-                                        label="2. Milling"
-                                        value={locationInputs.mill}
-                                        onChange={(v) => setLocationInputs(prev => ({ ...prev, mill: v }))}
-                                        onSearch={() => handleGeocode("mill", locationInputs.mill)}
-                                        loading={isGeocoding}
-                                    />
-                                    <LocationInput
-                                        label="3. Garment Construction"
-                                        value={locationInputs.production}
-                                        onChange={(v) => setLocationInputs(prev => ({ ...prev, production: v }))}
-                                        onSearch={() => handleGeocode("production", locationInputs.production)}
-                                        loading={isGeocoding}
-                                    />
-                                    <LocationInput
-                                        label="4. Ready for Client"
-                                        value={locationInputs.warehouse}
-                                        onChange={(v) => setLocationInputs(prev => ({ ...prev, warehouse: v }))}
-                                        onSearch={() => handleGeocode("warehouse", locationInputs.warehouse)}
-                                        loading={isGeocoding}
-                                    />
+                            {/* Scoring Guide */}
+                            {pillar.scoring_guide && (
+                                <Banner tone="info">
+                                    <Text variant="bodySm" as="p">
+                                        <strong>Scoring Guide:</strong> {pillar.scoring_guide}
+                                    </Text>
+                                </Banner>
+                            )}
 
-                                    <Divider />
-                                    <BlockStack gap="200">
-                                        <Text fontWeight="bold">Route Summary:</Text>
-                                        <List type="number">
-                                            {emissionsData.legs.map((leg, i) => (
-                                                <List.Item key={i}>
-                                                    <Text fontWeight="bold" variant="bodySm">{leg.label}</Text>
-                                                    <Text variant="bodyMd">{leg.from} → {leg.to}</Text>
-                                                    <Text tone="subdued" variant="bodySm">
-                                                        {leg.distance} km via {leg.mode} ({leg.emissions} kg CO2e)
-                                                    </Text>
-                                                </List.Item>
-                                            ))}
-                                        </List>
-                                        <Text fontWeight="bold" variant="headingMd">Total Distance: {emissionsData.totalDistance} km</Text>
-                                        <Text fontWeight="bold" variant="headingMd" tone="critical">Est. Emissions: {emissionsData.emissionsKg} kg CO2e</Text>
+                            {/* Special Rendering for Climate Pillar CO2 */}
+                            {pillar.id === "pillar_4" && emissionsData && (
+                                <Box background="bg-surface-secondary" padding="400" borderRadius="200">
+                                    <BlockStack gap="300">
+                                        <Text variant="headingSm" as="h3">Transport Route</Text>
+                                        <LocationInput
+                                            label="1. Primary Production"
+                                            value={locationInputs.primary}
+                                            onChange={(v) => setLocationInputs(prev => ({ ...prev, primary: v }))}
+                                            onSearch={() => handleGeocode("primary", locationInputs.primary)}
+                                            loading={isGeocoding}
+                                        />
+                                        <LocationInput
+                                            label="2. Milling"
+                                            value={locationInputs.mill}
+                                            onChange={(v) => setLocationInputs(prev => ({ ...prev, mill: v }))}
+                                            onSearch={() => handleGeocode("mill", locationInputs.mill)}
+                                            loading={isGeocoding}
+                                        />
+                                        <LocationInput
+                                            label="3. Garment Construction"
+                                            value={locationInputs.production}
+                                            onChange={(v) => setLocationInputs(prev => ({ ...prev, production: v }))}
+                                            onSearch={() => handleGeocode("production", locationInputs.production)}
+                                            loading={isGeocoding}
+                                        />
+                                        <LocationInput
+                                            label="4. Ready for Client"
+                                            value={locationInputs.warehouse}
+                                            onChange={(v) => setLocationInputs(prev => ({ ...prev, warehouse: v }))}
+                                            onSearch={() => handleGeocode("warehouse", locationInputs.warehouse)}
+                                            loading={isGeocoding}
+                                        />
+
+                                        <Divider />
+                                        <BlockStack gap="200">
+                                            <Text fontWeight="bold">Route Summary:</Text>
+                                            <List type="number">
+                                                {emissionsData.legs.map((leg, i) => (
+                                                    <List.Item key={i}>
+                                                        <Text>
+                                                            {leg.from} → {leg.to}: {leg.distance} km via {leg.mode} ({leg.emissions} kg CO₂e)
+                                                        </Text>
+                                                    </List.Item>
+                                                ))}
+                                            </List>
+                                            <Text fontWeight="bold" variant="headingMd">Total Distance: {emissionsData.totalDistance} km</Text>
+                                            <Text fontWeight="bold" variant="headingMd" tone="critical">Est. Emissions: {emissionsData.emissionsKg} kg CO2e</Text>
+                                        </BlockStack>
                                     </BlockStack>
-                                </BlockStack>
-                            </Box>
-                        )}
+                                </Box>
+                            )}
 
-                        {pillar.questions.map((q) => (
-                            <Box key={q.id} paddingBlockEnd="200">
-                                {renderQuestion(q, formData, handleInputChange, { millOptions, atelierOptions })}
-                            </Box>
-                        ))}
-                    </BlockStack>
-                </Card>
-            ))}
+                            {questions.map((q) => (
+                                <Box key={q.id} paddingBlockEnd="200">
+                                    {renderQuestion(q, formData, handleInputChange, { millOptions, atelierOptions, emissionsData })}
+                                </Box>
+                            ))}
+                        </BlockStack>
+                    </Card>
+                );
+            })}
 
             <Box paddingBlockStart="400">
                 <Button
@@ -553,13 +635,49 @@ function ScoreIndicator({ label, score, max }) {
     );
 }
 
-function renderQuestion(q, formData, onChange, { millOptions, atelierOptions }) {
+function renderQuestion(q, formData, onChange, { millOptions, atelierOptions, emissionsData }) {
     // Validation Logic: If mill is selected but answer is empty, show error
     const isInvalid = formData.mill_id && (!formData[q.id] || formData[q.id] === "");
     const error = isInvalid ? true : undefined; // Polaris uses boolean or string for error
 
     if (q.type === "readonly_score") {
-        return null;
+        // Display calculated transport emissions
+        const score = formData[q.id] || 0;
+        const distance = emissionsData?.totalDistance || 0;
+        const emissions = emissionsData?.emissionsKg || 0;
+        const emissionsNum = parseFloat(emissions);
+
+        return (
+            <Card>
+                <BlockStack gap="300">
+                    <Text variant="headingSm" as="h3">{q.label}</Text>
+                    <Text variant="bodySm" tone="subdued">
+                        Calculated using GHG Protocol methodology (mass × distance × emission factor per transport mode)
+                    </Text>
+                    <BlockStack gap="200">
+                        <InlineStack gap="400" align="space-between">
+                            <Text tone="subdued">Total Distance:</Text>
+                            <Text fontWeight="semibold">{distance.toLocaleString()} km</Text>
+                        </InlineStack>
+                        <InlineStack gap="400" align="space-between">
+                            <Text tone="subdued">CO₂ Emissions:</Text>
+                            <Text fontWeight="semibold">{emissions} kg CO₂e</Text>
+                        </InlineStack>
+                        <Divider />
+                        <InlineStack gap="400" align="space-between">
+                            <Text fontWeight="bold">Points Awarded:</Text>
+                            <Text fontWeight="bold" tone={score >= 3 ? "success" : score > 0 ? "warning" : "critical"}>{score} / 5</Text>
+                        </InlineStack>
+                        <Text variant="bodySm" tone="subdued">
+                            {emissionsNum < 15 ? "✓ Excellent (<15 kg CO₂e) - Sea freight, regional sourcing" :
+                                emissionsNum < 25 ? "⚠ Good (15-25 kg CO₂e) - Mixed sea/road transport" :
+                                    emissionsNum < 40 ? "⚠ Fair (25-40 kg CO₂e) - Some air freight" :
+                                        "✗ Poor (≥40 kg CO₂e) - Heavy air freight use"}
+                        </Text>
+                    </BlockStack>
+                </BlockStack>
+            </Card>
+        );
     }
 
     if (q.type === "dynamic_lookup") {
@@ -583,6 +701,7 @@ function renderQuestion(q, formData, onChange, { millOptions, atelierOptions }) 
                 onChange={(val) => onChange(q.id, val)}
                 value={formData[q.id]}
                 error={error}
+                helpText={q.helpText}
             />
         );
     }

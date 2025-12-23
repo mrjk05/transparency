@@ -1,5 +1,17 @@
 DROP TABLE IF EXISTS report_answers;
 DROP TABLE IF EXISTS reports;
+DROP TABLE IF EXISTS sessions;
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  shop TEXT,
+  state TEXT,
+  isOnline INTEGER,
+  scope TEXT,
+  expires INTEGER,
+  accessToken TEXT,
+  userId BIGINT
+);
+
 DROP TABLE IF EXISTS fabric_collections;
 DROP TABLE IF EXISTS suppliers;
 
@@ -32,6 +44,7 @@ CREATE TABLE reports (
   shopify_order_id TEXT NOT NULL, 
   shopify_line_item_id TEXT, -- Specific item in the order
   shopify_customer_id TEXT,
+  customer_name TEXT, -- Customer display name
   suit_id TEXT NOT NULL, -- Format: KAD-YEAR-ORDER
   item_name TEXT, 
   

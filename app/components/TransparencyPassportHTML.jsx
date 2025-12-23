@@ -17,6 +17,10 @@ export function TransparencyPassportHTML({ data, scores, answers }) {
         if (question.type === "dynamic_lookup") {
             return answerValue ? "Verified" : "Not Verified";
         }
+        if (question.type === "readonly_score") {
+            // Display the score value directly
+            return answerValue;
+        }
         return answerValue;
     };
 
@@ -177,10 +181,9 @@ export function TransparencyPassportHTML({ data, scores, answers }) {
                     .total-score-box { padding: 8px; margin-top: 10px; }
                     .footer { margin-top: 15px; }
                     
+                    
                     .detailed-grid {
-                        display: grid;
-                        grid-template-columns: 1fr 1fr;
-                        gap: 15px;
+                        display: block;
                         margin-top: 10px;
                     }
                     .detailed-pages .section-title { margin-top: 5px; }
@@ -229,6 +232,9 @@ export function TransparencyPassportHTML({ data, scores, answers }) {
                             <div>
                                 <p className="info-label">Order Reference</p>
                                 <p className="info-value">{data.shopify_order_id || "N/A"}</p>
+                                {data.customer_name && (
+                                    <p className="info-value" style={{ fontSize: "10px", fontWeight: "400", marginTop: "2px" }}>{data.customer_name}</p>
+                                )}
                             </div>
                             <div>
                                 <p className="info-label">Item / Composition</p>

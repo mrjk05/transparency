@@ -34,6 +34,17 @@ export const loader = async ({ params, context }) => {
     return json({ report: { ...report, mill_name: millName, collection_name: collectionName }, answers });
 };
 
+export const meta = ({ data }) => {
+    if (!data || !data.report) {
+        return [{ title: "Transparency Report" }];
+    }
+
+    const orderRef = data.report.shopify_order_id || "Unknown";
+    return [
+        { title: `${orderRef} - Kadwood Transparency Report` }
+    ];
+};
+
 export default function PassportPreview() {
     const { report } = useLoaderData();
     const answers = useLoaderData().answers;

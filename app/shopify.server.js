@@ -4,31 +4,42 @@ import {
     shopifyApp,
     LATEST_API_VERSION,
 } from "@shopify/shopify-app-remix/server";
-import { MemorySessionStorage } from "@shopify/shopify-app-session-storage-memory";
-
-let _shopify = null;
+import { D1SessionStorage } from "./db/session.server";
 
 export function initShopify(env) {
-    if (_shopify) return _shopify;
+    console.log("[initShopify] Initializing...");
+    try {
+        if (!env.DB) {
+            console.error("[initShopify] env.DB is missing!");
+            throw new Error("env.DB is missing");
+        }
+        const sessionStorage = new D1SessionStorage(env.DB);
+        console.log("[initShopify] Session storage created");
 
-    _shopify = shopifyApp({
-        apiKey: env.SHOPIFY_API_KEY,
-        apiSecretKey: env.SHOPIFY_API_SECRET || "",
-        apiVersion: LATEST_API_VERSION,
-        scopes: env.SCOPES?.split(","),
-        appUrl: env.SHOPIFY_APP_URL || "",
-        authPathPrefix: "/auth",
-        sessionStorage: new MemorySessionStorage(),
-        distribution: AppDistribution.AppStore,
-        future: {
-            v3_webhookAdminContext: true,
-            v3_authenticatePublic: true,
-        },
-        hooks: {
-            afterAuth: async ({ session }) => {
-                _shopify.registerWebhooks({ session });
+        const shopify = shopifyApp({
+            apiKey: env.SHOPIFY_API_KEY,
+            apiSecretKey: env.SHOPIFY_API_SECRET || "",
+            apiVersion: LATEST_API_VERSION,
+            scopes: env.SCOPES?.split(","),
+            appUrl: env.SHOPIFY_APP_URL || "",
+            authPathPrefix: "/auth",
+            sessionStorage: sessionStorage,
+            distribution: AppDistribution.AppStore,
+            future: {
+                v3_webhookAdminContext: true,
+                v3_authenticatePublic: true,
             },
-        },
-    });
-    return _shopify;
+            hooks: {
+                afterAuth: async ({ session }) => {
+                    console.log("[afterAuth] Registering webhooks for session:", session.id);
+                    shopify.registerWebhooks({ session });
+                },
+            },
+        });
+        console.log("[initShopify] shopifyApp initialized successfully");
+        return shopify;
+    } catch (error) {
+        console.error("[initShopify] Error initializing shopifyApp:", error);
+        throw error;
+    }
 }

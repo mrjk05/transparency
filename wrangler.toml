@@ -1,12 +1,17 @@
 name = "kadwood-transparency-engine"
 compatibility_date = "2024-11-28"
-node_compat = true
+compatibility_flags = ["nodejs_compat"]
 main = "./build/index.js"
+
+[vars]
+SCOPES = "read_all_orders,read_customers,write_customers,read_orders,write_orders"
+SHOPIFY_APP_URL = "https://kadwood-transparency-engine.jinskaduthodil.workers.dev"
+
 
 [[d1_databases]]
 binding = "DB"
 database_name = "kadwood-db"
-database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" # Replace with actual ID
+database_id = "9f04287a-eac4-4d4f-8b50-491891144de9" # Replace with actual ID
 
 [[r2_buckets]]
 binding = "R2"
@@ -14,6 +19,21 @@ bucket_name = "kadwood-reports"
 
 [site]
 bucket = "./public"
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
 
 [build]
 command = "npm run build"

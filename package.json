@@ -8,7 +8,8 @@
     "dev": "remix dev --manual -c \"npm run start\"",
     "start": "wrangler dev ./build/index.js",
     "test": "vitest run",
-    "setup:local": "wrangler d1 execute kadwood-db --local --file=app/db/schema.sql && wrangler d1 execute kadwood-db --local --file=app/db/seed.sql"
+    "setup:local": "wrangler d1 execute kadwood-db --local --file=app/db/schema.sql && wrangler d1 execute kadwood-db --local --file=app/db/seed.sql",
+    "deploy": "npm run build && wrangler deploy && shopify app deploy --force"
   },
   "dependencies": {
     "@cloudflare/kv-asset-handler": "^0.4.1",

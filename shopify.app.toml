@@ -1,13 +1,21 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "SHOPIFY_API_KEY"
-name = "Kadwood Transparency Engine"
-application_url = "https://kadwood-transparency.jins.workers.dev"
+client_id = "fe06f844050ba06d15f36b20d41cfdc9"
+
+name = "Transparency Passport"
+application_url = "https://kadwood-transparency-engine.jinskaduthodil.workers.dev/app"
 embedded = true
+
+[auth]
+redirect_urls = [
+  "https://kadwood-transparency-engine.jinskaduthodil.workers.dev/auth/callback",
+  "https://kadwood-transparency-engine.jinskaduthodil.workers.dev/auth/shopify/callback",
+  "https://kadwood-transparency-engine.jinskaduthodil.workers.dev/api/webhooks"
+]
 
 [access_scopes]
 # Scopes needed for the app
-scopes = "write_products,read_products,write_orders,read_orders"
+scopes = "read_all_orders,read_customers,write_customers,read_orders,write_orders"
 
 [webhooks]
 api_version = "2024-01"
