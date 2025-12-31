@@ -144,7 +144,13 @@ export function TransparencyWizard({
 
         SCORING_CONFIG.forEach(pillar => {
             let pillarScore = 0;
-            pillar.questions.forEach(q => {
+
+            // For Pillar 1, use material-specific questions
+            const questions = pillar.id === "pillar_1"
+                ? getFilteredPillar1Questions(material)
+                : pillar.questions;
+
+            questions.forEach(q => {
                 const answer = formData[q.id];
                 pillarScore += calculateQuestionScore(q, answer);
             });
@@ -154,7 +160,7 @@ export function TransparencyWizard({
 
         newScores.total = Object.values(newScores).reduce((a, b) => a + b, 0) - newScores.total;
         setScores(newScores);
-    }, [formData, calculateQuestionScore]);
+    }, [formData, calculateQuestionScore, material]);
 
     // Handle Mill Selection to fetch collections & pre-fill certs
     const handleMillChange = async (value) => {
@@ -242,6 +248,7 @@ export function TransparencyWizard({
         }
     };
 
+
     // Helper to get material-specific Pillar 1 questions
     const getFilteredPillar1Questions = (material) => {
         const pillar1 = SCORING_CONFIG.find(p => p.id === "pillar_1");
@@ -265,6 +272,7 @@ export function TransparencyWizard({
 
         return [...certQuestions, ...universalQuestions];
     };
+
 
     // Helper to get primary location for a SINGLE material
     const getPrimaryLocation = (material) => {

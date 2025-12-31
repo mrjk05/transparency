@@ -6,7 +6,7 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { verifySessionToken } from "../auth/verifySessionToken.server";
 import { TransparencyWizard } from "../components/TransparencyWizard";
 import { renderToStream, Document, Page as PdfPage, Text as PdfText, View, StyleSheet } from "@react-pdf/renderer";
-import { SCORING_CONFIG } from "../config/scoring";
+import { SCORING_CONFIG, MATERIAL_CERTIFICATIONS } from "../config/scoring";
 
 // --- PDF Styles ---
 const styles = StyleSheet.create({
@@ -364,6 +364,30 @@ export const loader = async ({ request, context }) => {
     });
 };
 
+// Helper to get material-specific Pillar 1 questions (used in action handler)
+function getFilteredPillar1Questions(material) {
+    const pillar1 = SCORING_CONFIG.find(p => p.id === "pillar_1");
+    if (!pillar1) return [];
+
+    // Get material-specific certifications
+    const materialCerts = MATERIAL_CERTIFICATIONS[material] || [];
+
+    // Keep universal questions (chemistry, RSL, trims)
+    const universalQuestions = pillar1.questions.filter(q =>
+        ["p1_chemistry", "p1_rsl", "p1_trims"].includes(q.id)
+    );
+
+    // Create certification questions from material config
+    const certQuestions = materialCerts.map(cert => ({
+        id: `p1_${cert.id}`,
+        label: cert.label,
+        type: "checkbox",
+        options: [{ label: "Yes", value: "yes", points: cert.points }]
+    }));
+
+    return [...certQuestions, ...universalQuestions];
+}
+
 // --- Action ---
 export const action = async ({ request, context }) => {
     const { env } = context.cloudflare;
@@ -435,7 +459,12 @@ export const action = async ({ request, context }) => {
         // 3.1 Save Answers
         const answersToInsert = [];
         for (const pillar of SCORING_CONFIG) {
-            for (const question of pillar.questions) {
+            // For Pillar 1, use material-specific questions
+            const questions = pillar.id === "pillar_1"
+                ? getFilteredPillar1Questions(rawData.composition || "Wool")
+                : pillar.questions;
+
+            for (const question of questions) {
                 const answerValue = rawData[question.id];
                 // Save if there is a value (even if "no" or empty string if that's a valid answer, but usually check truthy or specific values)
                 // For checkboxes, value is "yes" or empty.

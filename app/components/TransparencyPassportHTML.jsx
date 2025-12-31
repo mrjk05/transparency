@@ -1,5 +1,5 @@
 import React from "react";
-import { SCORING_CONFIG } from "../config/scoring";
+import { SCORING_CONFIG, MATERIAL_CERTIFICATIONS } from "../config/scoring";
 
 export function TransparencyPassportHTML({ data, scores, answers }) {
     const formatDate = (dateString) => {
@@ -23,6 +23,31 @@ export function TransparencyPassportHTML({ data, scores, answers }) {
         }
         return answerValue;
     };
+
+    // Helper to get material-specific Pillar 1 questions
+    const getFilteredPillar1Questions = (material) => {
+        const pillar1 = SCORING_CONFIG.find(p => p.id === "pillar_1");
+        if (!pillar1) return [];
+
+        // Get material-specific certifications
+        const materialCerts = MATERIAL_CERTIFICATIONS[material] || [];
+
+        // Keep universal questions (chemistry, RSL, trims)
+        const universalQuestions = pillar1.questions.filter(q =>
+            ["p1_chemistry", "p1_rsl", "p1_trims"].includes(q.id)
+        );
+
+        // Create certification questions from material config
+        const certQuestions = materialCerts.map(cert => ({
+            id: `p1_${cert.id}`,
+            label: cert.label,
+            type: "checkbox",
+            options: [{ label: "Yes", value: "yes", points: cert.points }]
+        }));
+
+        return [...certQuestions, ...universalQuestions];
+    };
+
 
     return (
         <>
@@ -339,33 +364,40 @@ export function TransparencyPassportHTML({ data, scores, answers }) {
                                 </div>
 
                                 <div className="detailed-grid">
-                                    {SCORING_CONFIG.map(pillar => (
-                                        <div key={pillar.id} className="pillar-block">
-                                            <div className="section-title">{pillar.title}</div>
-                                            <p style={{ fontSize: "10px", color: "#666", marginBottom: "10px" }}>{pillar.description}</p>
-                                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
-                                                <thead>
-                                                    <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
-                                                        <th style={{ padding: "6px 0", color: "#42141E", fontWeight: "600" }}>Criteria</th>
-                                                        <th style={{ padding: "6px 0", color: "#42141E", fontWeight: "600" }}>Status</th>
-                                                        <th style={{ padding: "6px 0", color: "#42141E", textAlign: "right", fontWeight: "600" }}>Points</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {pillar.questions.map(q => {
-                                                        const ans = answers.find(a => a.question_id === q.id);
-                                                        return (
-                                                            <tr key={q.id} style={{ borderBottom: "1px solid #f9f9f9" }}>
-                                                                <td style={{ padding: "6px 0", width: "50%" }}>{q.label}</td>
-                                                                <td style={{ padding: "6px 0", fontWeight: "400" }}>{ans ? getAnswerText(q, ans.answer_value) : "-"}</td>
-                                                                <td style={{ padding: "6px 0", textAlign: "right" }}>{ans ? ans.points_awarded : 0}</td>
-                                                            </tr>
-                                                        );
-                                                    })}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    ))}
+                                    {SCORING_CONFIG.map(pillar => {
+                                        // For Pillar 1, use material-specific questions
+                                        const questions = pillar.id === "pillar_1"
+                                            ? getFilteredPillar1Questions(data.composition || "Wool")
+                                            : pillar.questions;
+
+                                        return (
+                                            <div key={pillar.id} className="pillar-block">
+                                                <div className="section-title">{pillar.title}</div>
+                                                <p style={{ fontSize: "10px", color: "#666", marginBottom: "10px" }}>{pillar.description}</p>
+                                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
+                                                    <thead>
+                                                        <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
+                                                            <th style={{ padding: "6px 0", color: "#42141E", fontWeight: "600" }}>Criteria</th>
+                                                            <th style={{ padding: "6px 0", color: "#42141E", fontWeight: "600" }}>Status</th>
+                                                            <th style={{ padding: "6px 0", color: "#42141E", textAlign: "right", fontWeight: "600" }}>Points</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {questions.map(q => {
+                                                            const ans = answers.find(a => a.question_id === q.id);
+                                                            return (
+                                                                <tr key={q.id} style={{ borderBottom: "1px solid #f9f9f9" }}>
+                                                                    <td style={{ padding: "6px 0", width: "50%" }}>{q.label}</td>
+                                                                    <td style={{ padding: "6px 0", fontWeight: "400" }}>{ans ? getAnswerText(q, ans.answer_value) : "-"}</td>
+                                                                    <td style={{ padding: "6px 0", textAlign: "right" }}>{ans ? ans.points_awarded : 0}</td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             </div>
                         </div>
