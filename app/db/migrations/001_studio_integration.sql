@@ -44,13 +44,17 @@ CREATE TABLE IF NOT EXISTS report_orders (
   shop_domain      TEXT NOT NULL,
   order_numeric_id TEXT NOT NULL,
   order_name       TEXT,
-  is_primary       INTEGER NOT NULL DEFAULT 0,
+  -- CHECK, not just a default: the partial index below constrains the literal 1, so without
+  -- this an is_primary of 2 slips past it entirely and any code written as `WHERE is_primary`
+  -- (SQLite truthiness) would see two primaries. Same argument as shop_domain — SQLite cannot
+  -- add a CHECK in place later, so it costs one line now and a table rebuild afterwards.
+  is_primary       INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
   UNIQUE (shop_domain, order_numeric_id)
 );
 
--- A passport may span several orders, but exactly one of them names the passport (titles,
--- filenames, the customer-facing order reference). Without this, "the primary order" is
--- ambiguous the moment a deposit/balance pair is attached — the case report_orders exists for.
+-- A passport may span several orders, but AT MOST one of them names it (titles, filenames, the
+-- customer-facing order reference). Note "at most", not "exactly": a report can legitimately
+-- have orders attached and no primary among them, and nothing here prevents that.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_report_orders_one_primary
   ON report_orders(report_id) WHERE is_primary = 1;
 

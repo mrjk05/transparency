@@ -83,17 +83,29 @@ ALTER TABLE reports ADD COLUMN shopify_order_numeric_id TEXT;  -- primary order,
 ALTER TABLE reports ADD COLUMN rendered_at INTEGER;            -- drives the stale check
 
 CREATE TABLE report_orders (
-  report_id        TEXT NOT NULL REFERENCES reports(id),
+  report_id        TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
   shop_domain      TEXT NOT NULL,
   order_numeric_id TEXT NOT NULL,
   order_name       TEXT,
-  is_primary       INTEGER NOT NULL DEFAULT 0,
+  is_primary       INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
   UNIQUE (shop_domain, order_numeric_id)
 );
 
 CREATE INDEX idx_reports_customer ON reports(shop_domain, shopify_customer_id);
 CREATE INDEX idx_report_orders_report ON report_orders(report_id);
+-- At most one order names each passport (not "exactly one" — zero primaries is permitted).
+CREATE UNIQUE INDEX idx_report_orders_one_primary ON report_orders(report_id) WHERE is_primary = 1;
 ```
+
+`ON DELETE CASCADE` is load-bearing: migration 002 deletes reports, and one already attached to
+an order would otherwise abort that DELETE on a foreign key — after the answer deletion ahead of
+it had committed, stripping a surviving passport of the evidence its second page renders from.
+
+**Canonical `shop_domain`: `kadwood.myshopify.com`.** The store is also reachable as
+`limitedcollective.myshopify.com` (its former handle). Every shop-scoped query — the two
+endpoints in §5, `idx_reports_customer`, and Studio's `env.SHOPIFY_STORE_DOMAIN` — must use the
+same spelling or they silently return nothing. `sessions` is empty in production, so there is no
+in-database precedent to infer it from; this line is the pin.
 
 `report_orders` is the truth: an order belongs to at most one passport, a passport may span
 several. `reports.shopify_order_numeric_id` is a display hint only.

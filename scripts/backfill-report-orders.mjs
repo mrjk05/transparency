@@ -10,11 +10,23 @@
  * This script does not touch the database. It prints SQL to stdout so the statements can be
  * read before they are run:
  *
- *   export SHOPIFY_STORE_DOMAIN=kadwood.myshopify.com
- *   export SHOPIFY_ADMIN_TOKEN=shpat_...
- *   node scripts/backfill-report-orders.mjs > backfill.sql
+ *   export SHOPIFY_STORE_DOMAIN=kadwood.myshopify.com   # canonical — see below
+ *   export SHOPIFY_ADMIN_TOKEN=shpat_...                # needs read_all_orders
+ *   node scripts/backfill-report-orders.mjs > backfill.sql || echo "REVIEW: unresolved reports"
  *   less backfill.sql
  *   npx wrangler d1 execute kadwood-db --file=backfill.sql
+ *
+ * Exits non-zero if any report could not be resolved. The redirection above still writes the
+ * file, so check the exit status — `>` alone will not stop a pipeline.
+ *
+ * SHOPIFY_STORE_DOMAIN is stamped onto every row as `shop_domain` and becomes the value every
+ * later shop-scoped query must match exactly, including Studio's. The store answers to both
+ * `kadwood.myshopify.com` and `limitedcollective.myshopify.com` (its former handle);
+ * **`kadwood.myshopify.com` is canonical** and is what Studio sends. Using the other spelling
+ * makes those queries return nothing, silently.
+ *
+ * SHOPIFY_ADMIN_TOKEN must carry `read_all_orders`: the REST Order resource returns only the
+ * last 60 days without it, and every report being backfilled is older than that.
  *
  * Run AFTER migrations 001 and 002. Safe to re-run: the emitted SQL is idempotent.
  */
@@ -30,27 +42,46 @@ if (!SHOP || !TOKEN) {
   process.exit(1);
 }
 
-const sqlLiteral = (v) => (v === null || v === undefined ? "NULL" : `'${String(v).replace(/'/g, "''")}'`);
+/**
+ * Every character SQLite or a human reader would treat as ending a line, plus the remaining C0
+ * controls so nothing invisible survives into a file someone is asked to review.
+ *
+ * Written as escapes and never as literals: U+2028 and U+2029 are line terminators in
+ * JavaScript source too, so embedding them here would break this file.
+ */
+const stripControls = (s) => s.replace(/[\u0000-\u001F\u007F\u2028\u2029]+/g, " ");
+
+/**
+ * Quote a value for SQL.
+ *
+ * Doubling `'` is what makes a value safe to EXECUTE. Stripping controls first is what keeps it
+ * safe to READ, and this script's entire safety argument is that it prints SQL for a human to
+ * check before running it. A newline inside an order name splits the statement across physical
+ * lines, one of which can be made to read `DELETE FROM reports;` — inert inside a string
+ * literal, but indistinguishable from the real thing at a glance, and the sanitised comment
+ * directly above it would then disagree with what the statement appears to say. A NUL is worse
+ * than cosmetic: it truncates sqlite3's line buffer and desynchronises the parse outright.
+ */
+const sqlLiteral = (v) =>
+  v === null || v === undefined ? "NULL" : `'${stripControls(String(v)).replace(/'/g, "''")}'`;
 
 /**
  * Sanitise a value destined for a `--` comment line.
  *
- * `sqlLiteral` protects quoted values, but a comment has no closing delimiter: a newline ends
- * it and everything after becomes executable SQL. `reports.shopify_order_id` is stylist-entered
- * (TransparencyWizard writes `formData.shopify_order_id`, only falling back to the real order
- * name), so a crafted or fat-fingered value could smuggle a statement into a file the operator
- * is told to pipe straight into `wrangler d1 execute` — and an injected DELETE buried in a wall
- * of comments is exactly what a human skim misses.
+ * A comment has no closing delimiter: a newline ends it and everything after becomes executable
+ * SQL. `reports.shopify_order_id` is stylist-entered (TransparencyWizard writes
+ * `formData.shopify_order_id`, only falling back to the real order name), so a crafted or
+ * fat-fingered value could otherwise smuggle a statement into a file the operator is told to
+ * pipe straight into `wrangler d1 execute` — and an injected DELETE buried in a wall of
+ * comments is exactly what a human skim misses.
  */
-const sqlComment = (v) =>
-  String(v ?? "")
-    // Every character SQLite would treat as ending the comment line, plus the remaining C0
-    // controls so nothing invisible survives into a file a human is asked to review. Written
-    // as escapes and never as literals: U+2028 and U+2029 are line terminators in JavaScript
-    // source too, so embedding them here would break this file.
-    .replace(/[\u0000-\u001F\u007F\u2028\u2029]+/g, " ")
-    .trim()
-    .slice(0, 200) || "(blank)";
+const sqlComment = (v) => {
+  const cleaned = stripControls(String(v ?? "")).trim();
+  if (!cleaned) return "(blank)";
+  // Say so when the tail is dropped, or the comment silently under-reports what the statement
+  // beside it actually writes.
+  return cleaned.length > 200 ? `${cleaned.slice(0, 200)} …(truncated)` : cleaned;
+};
 
 /** Read the surviving reports straight out of D1 via wrangler. */
 function loadReports() {

@@ -26,20 +26,31 @@
 --   npx wrangler d1 execute kadwood-db --file=app/db/migrations/002_dedupe_reports.sql
 --
 -- This file is re-runnable, and will need re-running: the create-report action does not gain
--- its upsert until a later PR, so duplicates keep accumulating until then. Two consequences:
+-- its upsert until a later PR, so duplicates keep accumulating until then. Three things to
+-- know before running it:
 --
---   * `wrangler d1 execute --file` is NOT atomic. A failure part-way through commits whatever
---     ran before it. The answer deletions below happen BEFORE the report deletions, so an abort
---     between them would leave a surviving report with no answers — and `report_answers` is
---     what the passport's second page (the per-pillar evidence tables) is rendered from. The
---     deferred foreign keys and the ON DELETE CASCADE added in 001 are what prevent that;
---     without them, deleting a report that had already been attached to an order aborted here.
+--   * The answer deletions below happen BEFORE the report deletions. If the report DELETE were
+--     to abort, a surviving report would be left with no answers — and `report_answers` is what
+--     the passport's second page (the per-pillar evidence tables) is rendered from. What
+--     prevents that is the ON DELETE CASCADE on report_orders added in 001, and nothing else:
+--     without it, deleting a report already attached to an order aborts on the foreign key.
+--     (An earlier revision of this file also set `PRAGMA defer_foreign_keys`. It was inert —
+--     SQLite resets that pragma at each COMMIT, so outside an explicit transaction the setting
+--     statement is its own transaction and the flag is gone before the next statement runs.
+--     It has been removed rather than left in place looking load-bearing.)
+--
+--   * `wrangler d1 execute --file` IS atomic, on both paths: `--remote` uses D1's import API,
+--     which restores the original state on failure, and `--local` goes through `db.batch()`,
+--     which Cloudflare documents as a single transaction. A failure mid-file therefore rolls
+--     back rather than leaving the database half-migrated. Take the backup anyway — that
+--     covers the case this cannot, which is the migration succeeding and being wrong.
 --
 --   * Re-running this after a backfill can delete a report that owned a `report_orders` row.
---     The cascade cleans up the mapping, but the newly surviving report will then have no
---     order attached — RE-RUN scripts/backfill-report-orders.mjs afterwards.
-
-PRAGMA defer_foreign_keys = true;
+--     The cascade cleans up the mapping, but the newly surviving report will then have no order
+--     attached — RE-RUN scripts/backfill-report-orders.mjs afterwards. If that re-run fails on
+--     `UNIQUE constraint failed: report_orders.report_id`, it means the order is already
+--     attached to a different passport as its primary; resolve which passport owns it, delete
+--     the stale report_orders row by hand, and re-run.
 
 -- 1. Reports submitted without an order.
 DELETE FROM report_answers

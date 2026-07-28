@@ -94,11 +94,14 @@ CREATE TABLE report_orders (
   shop_domain      TEXT NOT NULL,
   order_numeric_id TEXT NOT NULL,
   order_name       TEXT,
-  is_primary       INTEGER NOT NULL DEFAULT 0, -- the order used for titles and filenames
+  -- the order used for titles and filenames; CHECK because the partial index below only
+  -- constrains the literal 1, so an is_primary of 2 would slip past it
+  is_primary       INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
   UNIQUE (shop_domain, order_numeric_id)
 );
 
 CREATE INDEX idx_reports_customer ON reports(shop_domain, shopify_customer_id);
 CREATE INDEX idx_report_orders_report ON report_orders(report_id);
--- Exactly one order names each passport.
+-- At most one order names each passport. Not "exactly one" — a report may have orders attached
+-- with no primary among them, and nothing here prevents that.
 CREATE UNIQUE INDEX idx_report_orders_one_primary ON report_orders(report_id) WHERE is_primary = 1;
