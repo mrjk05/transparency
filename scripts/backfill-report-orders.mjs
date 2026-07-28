@@ -14,10 +14,14 @@
  *   export SHOPIFY_ADMIN_TOKEN=shpat_...                # needs read_all_orders
  *   node scripts/backfill-report-orders.mjs > backfill.sql || echo "REVIEW: unresolved reports"
  *   less backfill.sql
- *   npx wrangler d1 execute kadwood-db --file=backfill.sql
+ *   npx wrangler d1 execute kadwood-db --remote --file=backfill.sql
  *
  * Exits non-zero if any report could not be resolved. The redirection above still writes the
  * file, so check the exit status — `>` alone will not stop a pipeline.
+ *
+ * `--remote` is NOT optional: `wrangler d1 execute` targets the LOCAL database by default and
+ * prints success either way. This script already reads production with --remote, so omitting it
+ * on the write means reading prod and writing .wrangler/state.
  *
  * SHOPIFY_STORE_DOMAIN is stamped onto every row as `shop_domain` and becomes the value every
  * later shop-scoped query must match exactly, including Studio's. The store answers to both
@@ -44,12 +48,15 @@ if (!SHOP || !TOKEN) {
 
 /**
  * Every character SQLite or a human reader would treat as ending a line, plus the remaining C0
- * controls so nothing invisible survives into a file someone is asked to review.
+ * controls and the bidirectional-override formatting characters, so nothing invisible or
+ * text-reordering survives into a file someone is asked to review. U+202E in particular can make
+ * a statement read as something other than what it does.
  *
  * Written as escapes and never as literals: U+2028 and U+2029 are line terminators in
  * JavaScript source too, so embedding them here would break this file.
  */
-const stripControls = (s) => s.replace(/[\u0000-\u001F\u007F\u2028\u2029]+/g, " ");
+const stripControls = (s) =>
+  s.replace(/[\u0000-\u001F\u007F\u2028\u2029\u200E\u200F\u202A-\u202E\u2066-\u2069]+/g, " ");
 
 /**
  * Quote a value for SQL.
@@ -80,7 +87,9 @@ const sqlComment = (v) => {
   if (!cleaned) return "(blank)";
   // Say so when the tail is dropped, or the comment silently under-reports what the statement
   // beside it actually writes.
-  return cleaned.length > 200 ? `${cleaned.slice(0, 200)} …(truncated)` : cleaned;
+  // Array.from splits by code point, so truncating cannot leave a lone surrogate half.
+  const points = Array.from(cleaned);
+  return points.length > 200 ? `${points.slice(0, 200).join("")} …(truncated)` : cleaned;
 };
 
 /** Read the surviving reports straight out of D1 via wrangler. */

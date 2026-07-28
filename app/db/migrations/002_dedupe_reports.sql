@@ -22,8 +22,14 @@
 -- Expected outcome: 4 reports survive (#K-1111, #K-1115, #K-1116, #K-1118).
 --
 -- Run AFTER 001. Take a backup first:
---   npx wrangler d1 export kadwood-db --output=kadwood-db-backup.sql
---   npx wrangler d1 execute kadwood-db --file=app/db/migrations/002_dedupe_reports.sql
+--   npx wrangler d1 export  kadwood-db --remote --output=kadwood-db-backup.sql
+--   npx wrangler d1 execute kadwood-db --remote --file=app/db/migrations/002_dedupe_reports.sql
+--
+-- `--remote` is NOT optional on EITHER line. Both commands default to the LOCAL database and
+-- still print success. Without it the "backup" is a 31-byte file containing nothing, and the
+-- migration edits .wrangler/state instead of production — so the safety net is silently gone at
+-- the exact moment the destructive step runs. Check the output says "remote"; if it says
+-- "local", stop.
 --
 -- This file is re-runnable, and will need re-running: the create-report action does not gain
 -- its upsert until a later PR, so duplicates keep accumulating until then. Three things to
@@ -48,9 +54,11 @@
 --   * Re-running this after a backfill can delete a report that owned a `report_orders` row.
 --     The cascade cleans up the mapping, but the newly surviving report will then have no order
 --     attached — RE-RUN scripts/backfill-report-orders.mjs afterwards. If that re-run fails on
---     `UNIQUE constraint failed: report_orders.report_id`, it means the order is already
---     attached to a different passport as its primary; resolve which passport owns it, delete
---     the stale report_orders row by hand, and re-run.
+--     `UNIQUE constraint failed: report_orders.shop_domain, report_orders.order_numeric_id`,
+--     the order is already attached to a DIFFERENT passport; resolve which one owns it, delete
+--     the stale report_orders row by hand, and re-run. (The other constraint,
+--     `report_orders.report_id`, means the same passport gained a second primary order — a
+--     different fault with a different fix.)
 
 -- 1. Reports submitted without an order.
 DELETE FROM report_answers
@@ -59,14 +67,26 @@ DELETE FROM report_answers
 DELETE FROM reports
  WHERE shopify_order_id = 'UNKNOWN';
 
--- 2. Keep only the newest report per order. `id` breaks ties on identical timestamps so the
---    two statements below always select the same row.
+-- 2. Keep only the newest report per order, PER SHOP. Partitioning on the order name alone
+--    deduped across stores: this database is reachable from the production store and from
+--    kaddev1, and a dev passport for "#K-1116" that happened to be newer would delete the
+--    production one, its answers and its order mapping. Latent while every row has a NULL
+--    shop_domain (SQLite groups NULLs together, so the first run is unaffected), and live the
+--    moment the backfill stamps the column and a second shop writes — which matters because
+--    this file is meant to be re-run.
+--
+--    TRIM because "#K-1116" and "#K-1116 " are the same order to Shopify and to the backfill,
+--    which trims before looking an order up; left untrimmed they survive as separate reports
+--    and then collide when both resolve to one numeric order.
+--
+--    `id` breaks ties on identical timestamps so the two statements below always select the
+--    same row.
 DELETE FROM report_answers
  WHERE report_id IN (
    SELECT id FROM (
      SELECT id,
             ROW_NUMBER() OVER (
-              PARTITION BY shopify_order_id
+              PARTITION BY shop_domain, TRIM(shopify_order_id)
               ORDER BY created_at DESC, id DESC
             ) AS rn
        FROM reports
@@ -78,7 +98,7 @@ DELETE FROM reports
    SELECT id FROM (
      SELECT id,
             ROW_NUMBER() OVER (
-              PARTITION BY shopify_order_id
+              PARTITION BY shop_domain, TRIM(shopify_order_id)
               ORDER BY created_at DESC, id DESC
             ) AS rn
        FROM reports

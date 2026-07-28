@@ -28,8 +28,11 @@
 -- no `d1_migrations` ledger, so nothing tracks what has been applied. Check before running.)
 --
 -- Apply with:
---   npx wrangler d1 execute kadwood-db --file=app/db/migrations/001_studio_integration.sql
---   (add --local for the local dev database)
+--   npx wrangler d1 execute kadwood-db --remote --file=app/db/migrations/001_studio_integration.sql
+--
+-- `--remote` is NOT optional. `wrangler d1 execute` defaults to the LOCAL database in
+-- .wrangler/state — verified on 3.114.15, which prints "Executing on local database" and exits
+-- 0. Omit it and this migration reports complete success while production is untouched.
 
 ALTER TABLE reports ADD COLUMN shop_domain TEXT;
 ALTER TABLE reports ADD COLUMN shopify_order_numeric_id TEXT;
