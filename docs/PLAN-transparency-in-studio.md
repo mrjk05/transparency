@@ -113,9 +113,14 @@ several. `reports.shopify_order_numeric_id` is a display hint only.
 Start writing the columns that already exist and are dead: `shopify_customer_id`,
 `pdf_r2_key`, `suit_id`.
 
-**Migration of existing data:** keep the newest row per order (4 survive); delete the 11
-duplicates, the 3 `UNKNOWN` rows, and their `report_answers`. A one-off script resolves the
-4 order names to numeric IDs via the Shopify Admin API and seeds `report_orders`.
+**Migration of existing data:** keep the newest row per order **per shop** (4 survive); delete
+the 11 duplicates, the 3 `UNKNOWN` rows, and their `report_answers`. A one-off script resolves
+the 4 order names to numeric IDs via the Shopify Admin API and seeds `report_orders`.
+
+002 has to be re-run until T3 lands the upsert, so its partition coalesces a NULL `shop_domain`
+to the canonical store. Nothing writes that column before T3 — only the backfill does — so a
+bare `PARTITION BY shop_domain` would separate the backfilled survivors from every row written
+afterwards and stop deduping at exit 0.
 
 ### `kadwood-ai-db` (Studio)
 

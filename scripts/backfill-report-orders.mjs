@@ -47,16 +47,20 @@ if (!SHOP || !TOKEN) {
 }
 
 /**
- * Every character SQLite or a human reader would treat as ending a line, plus the remaining C0
- * controls and the bidirectional-override formatting characters, so nothing invisible or
- * text-reordering survives into a file someone is asked to review. U+202E in particular can make
- * a statement read as something other than what it does.
+ * Strips what can actually mislead a reader of the generated SQL: everything SQLite or wrangler
+ * treats as ending a line (both end a `--` comment only at U+000A or NUL), the rest of the C0
+ * and C1 controls, and the bidirectional formatting characters — U+202E in particular can make a
+ * statement read as something other than what it does.
+ *
+ * NOT a claim to remove everything invisible. Zero-width characters (U+200B–D, U+FEFF, U+2060)
+ * and soft hyphens survive; they can hide a difference between two order names but cannot change
+ * what a statement does, and quoting already makes the value inert.
  *
  * Written as escapes and never as literals: U+2028 and U+2029 are line terminators in
  * JavaScript source too, so embedding them here would break this file.
  */
 const stripControls = (s) =>
-  s.replace(/[\u0000-\u001F\u007F\u2028\u2029\u200E\u200F\u202A-\u202E\u2066-\u2069]+/g, " ");
+  s.replace(/[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]+/g, " ");
 
 /**
  * Quote a value for SQL.
@@ -92,7 +96,13 @@ const sqlComment = (v) => {
   return points.length > 200 ? `${points.slice(0, 200).join("")} …(truncated)` : cleaned;
 };
 
-/** Read the surviving reports straight out of D1 via wrangler. */
+/**
+ * Read the surviving reports straight out of D1 via wrangler.
+ *
+ * Deliberately unscoped by shop, because nothing populates `shop_domain` until T3 — every row is
+ * NULL at the point this runs. Once the wizard writes it, this SELECT must gain a shop filter,
+ * or a second store's rows would be stamped with SHOPIFY_STORE_DOMAIN and mislabelled.
+ */
 function loadReports() {
   const out = execFileSync(
     "npx",

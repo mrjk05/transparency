@@ -60,24 +60,41 @@
 --     `report_orders.report_id`, means the same passport gained a second primary order — a
 --     different fault with a different fix.)
 
--- 1. Reports submitted without an order.
+-- 1. Reports submitted without an order. Deliberately neither shop-scoped nor trimmed: a
+--    passport with no order covers nothing in any store, so there is no shop whose copy is
+--    worth keeping, and 'UNKNOWN' is written as an exact literal by the wizard.
 DELETE FROM report_answers
  WHERE report_id IN (SELECT id FROM reports WHERE shopify_order_id = 'UNKNOWN');
 
 DELETE FROM reports
  WHERE shopify_order_id = 'UNKNOWN';
 
--- 2. Keep only the newest report per order, PER SHOP. Partitioning on the order name alone
---    deduped across stores: this database is reachable from the production store and from
---    kaddev1, and a dev passport for "#K-1116" that happened to be newer would delete the
---    production one, its answers and its order mapping. Latent while every row has a NULL
---    shop_domain (SQLite groups NULLs together, so the first run is unaffected), and live the
---    moment the backfill stamps the column and a second shop writes — which matters because
---    this file is meant to be re-run.
+-- 2. Keep only the newest report per order, per shop.
 --
---    TRIM because "#K-1116" and "#K-1116 " are the same order to Shopify and to the backfill,
---    which trims before looking an order up; left untrimmed they survive as separate reports
---    and then collide when both resolve to one numeric order.
+--    Partitioning on the order name alone deduped ACROSS stores: this database is reachable
+--    from the production store and from kaddev1, and a dev passport for "#K-1116" that happened
+--    to be newer would delete the production one, its answers and its order mapping.
+--
+--    COALESCE, though, not a bare `shop_domain`. Nothing writes that column yet — the wizard
+--    gains it in T3, two PRs away — so the only rows carrying a value are the ones the backfill
+--    stamped. A bare partition therefore puts the four backfilled survivors in one group and
+--    every subsequently written row in another, both numbered rn = 1, and this file silently
+--    stops deduping at exit 0. That is not a corner case: the header above says in as many words
+--    that 002 must be re-run precisely because the upsert has not landed, so it is the expected
+--    path. Coalescing to the canonical store restores the grouping without writing anything: the
+--    stored NULLs stay NULL, so Studio's shop-scoped queries still (correctly) ignore rows the
+--    backfill has not reached.
+--
+--    Residual, accepted: a kaddev1 row written before T3 also carries NULL and so coalesces into
+--    the production group. kaddev1 is unused today; if that changes before T3, stamp its rows'
+--    shop_domain by hand before running this.
+--
+--    TRIM because "#K-1116" and "#K-1116 " are the same order to Shopify and to the backfill.
+--    The explicit character set matches JavaScript's .trim(), which is what findOrder applies
+--    before looking an order up — SQLite's one-argument TRIM strips only U+0020, so tab- and
+--    newline-padded variants would survive here and then collide there. Note this WIDENS the
+--    delete relative to a bare partition: a whitespace variant that previously survived is now
+--    treated as the same order. No row in production is affected (all 18 are unchanged by TRIM).
 --
 --    `id` breaks ties on identical timestamps so the two statements below always select the
 --    same row.
@@ -86,7 +103,8 @@ DELETE FROM report_answers
    SELECT id FROM (
      SELECT id,
             ROW_NUMBER() OVER (
-              PARTITION BY shop_domain, TRIM(shopify_order_id)
+              PARTITION BY COALESCE(shop_domain, 'kadwood.myshopify.com'),
+                           TRIM(shopify_order_id, ' ' || char(9) || char(10) || char(13))
               ORDER BY created_at DESC, id DESC
             ) AS rn
        FROM reports
@@ -98,7 +116,8 @@ DELETE FROM reports
    SELECT id FROM (
      SELECT id,
             ROW_NUMBER() OVER (
-              PARTITION BY shop_domain, TRIM(shopify_order_id)
+              PARTITION BY COALESCE(shop_domain, 'kadwood.myshopify.com'),
+                           TRIM(shopify_order_id, ' ' || char(9) || char(10) || char(13))
               ORDER BY created_at DESC, id DESC
             ) AS rn
        FROM reports
