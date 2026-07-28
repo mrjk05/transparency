@@ -29,7 +29,8 @@ been rendered to a PDF.
 | **Reports key on the order *name*** (`#K-1116`), not a stable ID. `shopify_customer_id` exists but is never written. | `app/db/schema.sql:42-49`, `app.create-report.jsx:428-457` |
 | **No upsert.** Every submit INSERTs; reads take `ORDER BY created_at DESC LIMIT 1`. | `app.create-report.jsx:451`, `:337` |
 | **18 report rows / 4 real orders.** `#K-1116` has 7 copies. 3 rows have `shopify_order_id = "UNKNOWN"`. `shopify_customer_id` NULL on all 18. `suit_id = "KAD-UNKNOWN"` on all 18. Nothing created since 2026-01-15. | `kadwood-db` |
-| **9 suppliers / 129 fabric collections / 290 answers**, all seeded from `app/db/seed.sql`. No management UI exists. | `kadwood-db` |
+| **9 suppliers / 129 fabric collections**, of which `app/db/seed.sql` accounts for only a fraction (1 `suppliers` insert, 7 `fabric_collections`) — the rest arrived out of band. **No management UI exists** for either. | `kadwood-db`, `app/db/seed.sql` |
+| **290 `report_answers`** across the 18 reports (8–19 each). None are seeded — every row is stylist-entered audit data, and it is what the passport's second page is rendered from. | `kadwood-db` |
 | **`kadwood-db` has no users or teams table.** Transparency cannot authorise "who may act on which client". | `sqlite_master` |
 | **Three divergent renderers** for the same document. | `TransparencyPassportHTML.jsx`, `TransparencyPassportPDF.jsx`, `app.create-report.jsx:26-66` |
 
@@ -125,7 +126,13 @@ CREATE TABLE client_passport_uploads (
 
 - `GET /api/studio/reports?customerId=&shopDomain=` → passports for a customer, with score,
   primary order, `rendered_at`, and attached order IDs
-- `GET /api/studio/reports/:id/pdf` → PDF bytes
+- `GET /api/studio/reports/:id/pdf?shopDomain=` → PDF bytes
+
+Deliberately **two** endpoints, not three. Studio picks a single passport out of the shop-scoped
+list rather than fetching it by ID, so every path that moves customer-facing bytes is scoped by
+shop. Order and customer IDs are only unique within a store and this database is reachable from
+the dev store, so an unscoped by-ID lookup could match a dev report against a production
+customer ID and deliver its PDF to a real customer.
 
 ### Transparency — human (Studio JWT cookie)
 

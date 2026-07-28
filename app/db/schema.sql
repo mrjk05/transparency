@@ -90,7 +90,7 @@ CREATE TABLE report_answers (
 --    An order belongs to at most one passport (enforced by the UNIQUE below); a passport may
 --    cover several orders, which is how a deposit + final-payment pair stays one passport.
 CREATE TABLE report_orders (
-  report_id        TEXT NOT NULL REFERENCES reports(id),
+  report_id        TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
   shop_domain      TEXT NOT NULL,
   order_numeric_id TEXT NOT NULL,
   order_name       TEXT,
@@ -100,3 +100,5 @@ CREATE TABLE report_orders (
 
 CREATE INDEX idx_reports_customer ON reports(shop_domain, shopify_customer_id);
 CREATE INDEX idx_report_orders_report ON report_orders(report_id);
+-- Exactly one order names each passport.
+CREATE UNIQUE INDEX idx_report_orders_one_primary ON report_orders(report_id) WHERE is_primary = 1;

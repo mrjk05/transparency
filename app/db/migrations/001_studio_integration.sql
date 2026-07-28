@@ -21,6 +21,12 @@
 --      timestamp of the copy it pushed to the member's portal in order to show
 --      "portal copy is out of date".
 --
+-- NOT re-runnable. SQLite has no `ADD COLUMN IF NOT EXISTS`, so a second run fails on
+-- "duplicate column name" at the first ALTER. That is deliberate — a half-applied migration
+-- should be noisy — but it means this file is one-shot. (These migrations are applied by hand
+-- rather than through `wrangler d1 migrations apply`: the project has no `migrations_dir` and
+-- no `d1_migrations` ledger, so nothing tracks what has been applied. Check before running.)
+--
 -- Apply with:
 --   npx wrangler d1 execute kadwood-db --file=app/db/migrations/001_studio_integration.sql
 --   (add --local for the local dev database)
@@ -29,14 +35,24 @@ ALTER TABLE reports ADD COLUMN shop_domain TEXT;
 ALTER TABLE reports ADD COLUMN shopify_order_numeric_id TEXT;
 ALTER TABLE reports ADD COLUMN rendered_at INTEGER;
 
+-- ON DELETE CASCADE is load-bearing, not decoration. Migration 002 deletes reports, and any
+-- report already carrying an attachment would otherwise abort that DELETE on a foreign-key
+-- violation — after the answer deletion ahead of it had already committed, leaving a surviving
+-- report stripped of the evidence its second page is rendered from.
 CREATE TABLE IF NOT EXISTS report_orders (
-  report_id        TEXT NOT NULL REFERENCES reports(id),
+  report_id        TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
   shop_domain      TEXT NOT NULL,
   order_numeric_id TEXT NOT NULL,
   order_name       TEXT,
   is_primary       INTEGER NOT NULL DEFAULT 0,
   UNIQUE (shop_domain, order_numeric_id)
 );
+
+-- A passport may span several orders, but exactly one of them names the passport (titles,
+-- filenames, the customer-facing order reference). Without this, "the primary order" is
+-- ambiguous the moment a deposit/balance pair is attached — the case report_orders exists for.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_report_orders_one_primary
+  ON report_orders(report_id) WHERE is_primary = 1;
 
 -- Studio looks a client's passports up by Shopify customer, scoped to the shop.
 CREATE INDEX IF NOT EXISTS idx_reports_customer

@@ -24,6 +24,22 @@
 -- Run AFTER 001. Take a backup first:
 --   npx wrangler d1 export kadwood-db --output=kadwood-db-backup.sql
 --   npx wrangler d1 execute kadwood-db --file=app/db/migrations/002_dedupe_reports.sql
+--
+-- This file is re-runnable, and will need re-running: the create-report action does not gain
+-- its upsert until a later PR, so duplicates keep accumulating until then. Two consequences:
+--
+--   * `wrangler d1 execute --file` is NOT atomic. A failure part-way through commits whatever
+--     ran before it. The answer deletions below happen BEFORE the report deletions, so an abort
+--     between them would leave a surviving report with no answers — and `report_answers` is
+--     what the passport's second page (the per-pillar evidence tables) is rendered from. The
+--     deferred foreign keys and the ON DELETE CASCADE added in 001 are what prevent that;
+--     without them, deleting a report that had already been attached to an order aborted here.
+--
+--   * Re-running this after a backfill can delete a report that owned a `report_orders` row.
+--     The cascade cleans up the mapping, but the newly surviving report will then have no
+--     order attached — RE-RUN scripts/backfill-report-orders.mjs afterwards.
+
+PRAGMA defer_foreign_keys = true;
 
 -- 1. Reports submitted without an order.
 DELETE FROM report_answers
