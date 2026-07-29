@@ -6,3 +6,9 @@ public/build
 .wrangler
 .cache
 package-lock.json
+
+# Production D1 dumps and generated migration SQL. These carry live Shopify
+# customer and order IDs — never commit them.
+kadwood-db-backup.sql
+*-backup.sql
+backfill.sql
