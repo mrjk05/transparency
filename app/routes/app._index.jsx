@@ -2,7 +2,8 @@ import React from "react";
 import { json } from "@remix-run/cloudflare";
 import { useLoaderData, useNavigate, useFetcher } from "@remix-run/react";
 import { Page, Layout, Card, BlockStack, Button, Text, Banner, ResourceList, ResourceItem, Avatar } from "@shopify/polaris";
-import { verifySessionToken } from "../auth/verifySessionToken.server";
+import { resolveAuth } from "../auth/resolveAuth.server";
+import { getAdminAccessToken } from "../auth/adminToken.server";
 
 export const loader = async ({ request, context }) => {
     const { env } = context.cloudflare;
@@ -10,114 +11,93 @@ export const loader = async ({ request, context }) => {
     let orders = [];
 
     if (!isMockMode) {
-        // Verify session token for embedded app
-        const auth = await verifySessionToken(request, env.SHOPIFY_API_SECRET);
+        const auth = await resolveAuth(request, env);
 
         if (!auth.ok) {
-            return json({ error: `Unauthorized: ${auth.reason}` }, { status: 401 });
+            return json({ error: `Unauthorized: ${auth.reason}` }, { status: auth.status });
         }
 
-        // Fetch orders from Shopify GraphQL API using token exchange
+        // Fetch orders from Shopify GraphQL API
         try {
-            const url = new URL(request.url);
-            const sessionToken = url.searchParams.get('id_token');
+            const accessToken = await getAdminAccessToken(request, env, auth);
 
-            if (sessionToken) {
-                // Exchange session token for access token
-                const tokenExchangeResponse = await fetch(`https://${auth.shop}/admin/oauth/access_token`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        client_id: env.SHOPIFY_API_KEY,
-                        client_secret: env.SHOPIFY_API_SECRET,
-                        grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-                        subject_token: sessionToken,
-                        subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-                        requested_token_type: 'urn:shopify:params:oauth:token-type:online-access-token',
-                    }),
-                });
+            if (accessToken) {
+                // GraphQL query to fetch recent orders with pagination support
+                const cursor = new URL(request.url).searchParams.get('cursor');
 
-                if (tokenExchangeResponse.ok) {
-                    const tokenData = await tokenExchangeResponse.json();
-                    const accessToken = tokenData.access_token;
-
-                    // GraphQL query to fetch recent orders with pagination support
-                    const url = new URL(request.url);
-                    const cursor = url.searchParams.get('cursor');
-
-                    const query = `
-                        query GetOrders($cursor: String) {
-                            orders(first: 10, reverse: true, after: $cursor) {
-                                edges {
-                                    cursor
-                                    node {
-                                        id
-                                        name
-                                        createdAt
-                                        customer {
-                                            displayName
-                                            email
-                                        }
-                                        lineItems(first: 5) {
-                                            edges {
-                                                node {
-                                                    id
-                                                    title
-                                                    quantity
-                                                }
+                const query = `
+                    query GetOrders($cursor: String) {
+                        orders(first: 10, reverse: true, after: $cursor) {
+                            edges {
+                                cursor
+                                node {
+                                    id
+                                    name
+                                    createdAt
+                                    customer {
+                                        displayName
+                                        email
+                                    }
+                                    lineItems(first: 5) {
+                                        edges {
+                                            node {
+                                                id
+                                                title
+                                                quantity
                                             }
                                         }
                                     }
                                 }
-                                pageInfo {
-                                    hasNextPage
-                                    endCursor
-                                }
+                            }
+                            pageInfo {
+                                hasNextPage
+                                endCursor
                             }
                         }
-                    `;
+                    }
+                `;
 
-                    const response = await fetch(`https://${auth.shop}/admin/api/2024-01/graphql.json`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Shopify-Access-Token': accessToken,
-                        },
-                        body: JSON.stringify({
-                            query,
-                            variables: cursor ? { cursor } : {}
-                        }),
-                    });
+                const response = await fetch(`https://${auth.shop}/admin/api/2024-01/graphql.json`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Shopify-Access-Token': accessToken,
+                    },
+                    body: JSON.stringify({
+                        query,
+                        variables: cursor ? { cursor } : {}
+                    }),
+                });
 
-                    if (response.ok) {
-                        const data = await response.json();
-                        console.log('[Order Fetch] GraphQL response:', JSON.stringify(data));
-                        if (data.data && data.data.orders) {
-                            orders = data.data.orders.edges.map(edge => ({
-                                id: edge.node.id,
-                                name: edge.node.name,
-                                createdAt: edge.node.createdAt,
-                                customer: edge.node.customer,
-                                lineItems: edge.node.lineItems.edges.map(li => li.node)
-                            }));
-                            console.log(`[Order Fetch] Found ${orders.length} orders`);
+                if (response.ok) {
+                    const data = await response.json();
+                    // Deliberately not logging the response body: it carries every listed
+                    // customer's display name and email address, and Worker logs are a far
+                    // wider audience than the admin screen that asked for them.
+                    if (data.errors) {
+                        console.error('[Order Fetch] GraphQL userErrors:', JSON.stringify(data.errors));
+                    }
+                    if (data.data && data.data.orders) {
+                        orders = data.data.orders.edges.map(edge => ({
+                            id: edge.node.id,
+                            name: edge.node.name,
+                            createdAt: edge.node.createdAt,
+                            customer: edge.node.customer,
+                            lineItems: edge.node.lineItems.edges.map(li => li.node)
+                        }));
+                        console.log(`[Order Fetch] Found ${orders.length} orders`);
 
-                            return json({
-                                isMockMode: isMockMode || false,
-                                orders: orders,
-                                pageInfo: data.data.orders.pageInfo
-                            });
-                        }
-                    } else {
-                        console.error('[Order Fetch] GraphQL error:', response.status, await response.text());
+                        return json({
+                            isMockMode: isMockMode || false,
+                            orders: orders,
+                            pageInfo: data.data.orders.pageInfo
+                        });
                     }
                 } else {
-                    console.error('[Order Fetch] Token exchange failed:', tokenExchangeResponse.status, await tokenExchangeResponse.text());
+                    console.error('[Order Fetch] GraphQL error:', response.status, await response.text());
                 }
             } else {
-                console.log('[Order Fetch] No session token in URL');
+                console.error(`[Order Fetch] No Admin API token available for mode "${auth.mode}"`);
             }
         } catch (error) {
             console.error('[Order Fetch] Error:', error);
@@ -133,7 +113,7 @@ export const loader = async ({ request, context }) => {
 
 export default function OrderSelection() {
     const loaderData = useLoaderData();
-    const { isMockMode = false, orders: initialOrders = [], pageInfo } = loaderData || {};
+    const { isMockMode = false, orders: initialOrders = [], pageInfo, error } = loaderData || {};
     const navigate = useNavigate();
     const fetcher = useFetcher();
 
@@ -164,6 +144,25 @@ export default function OrderSelection() {
         currentParams.set('cursor', endCursor);
         fetcher.load(`/app?${currentParams.toString()}`);
     };
+
+    // An auth failure is the one case where the rest of this page is meaningless: the order
+    // list is empty not because there are no orders but because we were not allowed to ask.
+    // Saying so beats rendering "No orders found", which sends the stylist looking for a
+    // problem in Shopify.
+    if (error) {
+        return (
+            <Page title="Select Order">
+                <Layout>
+                    <Layout.Section>
+                        <Banner tone="critical" title="Not signed in">
+                            <p>{error}</p>
+                            <p>Open this app from the Shopify admin, or from Kadwood Studio under Tools.</p>
+                        </Banner>
+                    </Layout.Section>
+                </Layout>
+            </Page>
+        );
+    }
 
     return (
         <Page

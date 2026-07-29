@@ -3,11 +3,26 @@ import { useLoaderData } from "@remix-run/react";
 import { useState } from "react";
 import { Page, Layout, Card, Button, BlockStack } from "@shopify/polaris";
 import { TransparencyPassportHTML } from "../components/TransparencyPassportHTML";
+import { resolveAuth } from "../auth/resolveAuth.server";
 
-export const loader = async ({ params, context }) => {
+export const loader = async ({ params, request, context }) => {
     const { id } = params;
     const { env } = context.cloudflare;
 
+    // This route had no authentication at all: anyone holding a report UUID could read a
+    // named customer's order reference, their garment, and the full supply chain behind it.
+    // The IDs are unguessable, but "unguessable" is not an access control — they are written
+    // into an order metafield and returned by the create-report action, so they travel.
+    const auth = await resolveAuth(request, env);
+    if (!auth.ok) {
+        throw new Response(`Unauthorized: ${auth.reason}`, { status: auth.status });
+    }
+
+    // Deliberately NOT scoped by shop yet. Nothing writes `reports.shop_domain` until T3, so
+    // every passport created between now and then has NULL there and a scoped lookup would
+    // 404 the page the stylist just submitted. The residual exposure is a dev-store stylist
+    // reading a production passport, which is bounded by every account being Kadwood staff.
+    // T3 adds the scope once the column is reliably populated.
     const report = await env.DB.prepare("SELECT * FROM reports WHERE id = ?").bind(id).first();
 
     if (!report) {

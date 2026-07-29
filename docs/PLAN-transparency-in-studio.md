@@ -257,3 +257,33 @@ Phase two (not scheduled): supplier and fabric-collection management UI.
 6. **Separate follow-up, other repo:** Size You does not check `TOKEN_BLACKLIST` either — a
    token revoked in Studio keeps working there for up to 7 days. Same one-line fix. Issue on
    `size_you_generator`, not part of this work.
+
+### Found while building T2
+
+7. **Shopify session tokens expire after 60 seconds, and nothing refreshes them.**
+   `verifySessionToken` reads `id_token` from the *URL*, which Shopify sets once on the
+   initial embedded load. Every later loader call — "Load Next 10 Orders", navigating to the
+   wizard, submitting it — reuses that same stale token and fails its `exp` check about a
+   minute in. App Bridge is what normally re-mints it, and although `@shopify/app-bridge-react`
+   is imported in `app.create-report.jsx` neither `TitleBar` nor `useAppBridge` is rendered,
+   and no App Bridge script tag exists, so it is not loaded at all. This predates T2 and T2
+   does not change it. **It is the reason `/api/collections` and `/api/geocode` were left
+   unauthenticated** (see 8) and it should be fixed before the embedded path is relied on.
+8. **Two API routes are still unauthenticated.** `/api/collections` (fabric catalogue reads,
+   enumerable by `millId`) and `/api/geocode` (an open proxy to Nominatim — abuse of it gets
+   Kadwood's egress IP blocked by OSM, not Kadwood's data leaked). Both are called by
+   client-side `fetch` from the wizard with no credential attached. Under Studio the session
+   cookie would cover them for free; under Shopify there is nothing to attach except a stale
+   `id_token`, so adding `resolveAuth` now would break the embedded wizard. Close these
+   together with 7.
+9. **The order-metafield writeback is dead code that would throw.**
+   `app.create-report.jsx` calls `admin.graphql(...)` in its action, but `admin` is never
+   defined in that scope — it is a `ReferenceError` waiting behind
+   `if (rawData.shopify_order_id_graphql)`, a field nothing ever sets. The URL it would write
+   is malformed too (`https://${env.SHOPIFY_APP_URL}/…`, where `SHOPIFY_APP_URL` already
+   carries the scheme). Unreachable today; delete or repair it in T3, which rewrites this
+   action anyway.
+10. **`/app/passport/:id` is authenticated but not shop-scoped.** T2 closed the hole where
+   any holder of a report UUID could read it. The scope has to wait for T3: nothing writes
+   `reports.shop_domain` until then, so a scoped lookup would 404 every passport created in
+   the meantime.
