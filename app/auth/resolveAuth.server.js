@@ -30,7 +30,7 @@ export const AUTH_MACHINE = 'machine';
 /** Header the Studio backend authenticates with. Must match Studio's TRANSPARENCY_ADMIN_SECRET. */
 export const ADMIN_SECRET_HEADER = 'x-kadwood-admin-secret';
 
-const CANONICAL_SHOP = 'kadwood.myshopify.com';
+export const CANONICAL_SHOP = 'kadwood.myshopify.com';
 
 /**
  * `limitedcollective` is not a second store — it is this store under the handle it traded
@@ -46,6 +46,25 @@ const SHOP_ALIASES = {
 const SHOP_DOMAIN_RE = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
 
 /**
+ * Shops the machine provider may name.
+ *
+ * An allowlist rather than "any well-formed myshopify.com host", because `shopDomain` is a
+ * caller-supplied query parameter and `auth.shop` is interpolated straight into
+ * `https://${auth.shop}/admin/api/...` alongside the app's offline Admin token. Accepting an
+ * arbitrary shop turns the machine endpoint into a way to post that token to a host the
+ * caller chose. `getAdminAccessToken` refuses non-canonical shops as well — two independent
+ * guards, because this is the one place a leaked shared secret would otherwise cost far more
+ * than passport data.
+ */
+const MACHINE_SHOPS = new Set([CANONICAL_SHOP, 'kaddev1.myshopify.com']);
+
+/**
+ * Query parameters Shopify puts on an embedded request. Their presence means the browser is
+ * inside the Shopify admin, whatever else it may be carrying.
+ */
+const SHOPIFY_CONTEXT_PARAMS = ['host', 'embedded', 'shop', 'id_token'];
+
+/**
  * Resolve the caller's identity.
  *
  * @param {Request} request
@@ -59,6 +78,7 @@ const SHOP_DOMAIN_RE = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
  */
 export async function resolveAuth(request, env, options = {}) {
   const allow = options.allow ?? [AUTH_SHOPIFY, AUTH_STUDIO];
+  const params = new URL(request.url).searchParams;
 
   if (allow.includes(AUTH_MACHINE)) {
     const presented = request.headers.get(ADMIN_SECRET_HEADER);
@@ -71,16 +91,16 @@ export async function resolveAuth(request, env, options = {}) {
         return fail(401, 'invalid admin secret');
       }
 
-      const shop = canonicalShop(new URL(request.url).searchParams.get('shopDomain'));
-      if (!shop) {
-        return fail(400, 'shopDomain is required and must be a myshopify.com domain');
+      const shop = canonicalShop(params.get('shopDomain'));
+      if (!shop || !MACHINE_SHOPS.has(shop)) {
+        return fail(400, 'shopDomain is required and must name a known Kadwood store');
       }
 
       return { ok: true, mode: AUTH_MACHINE, shop, userId: 'studio-backend', email: null };
     }
   }
 
-  if (allow.includes(AUTH_SHOPIFY) && new URL(request.url).searchParams.has('id_token')) {
+  if (allow.includes(AUTH_SHOPIFY) && params.has('id_token')) {
     const auth = await verifySessionToken(request, env.SHOPIFY_API_SECRET);
     if (!auth.ok) {
       return fail(401, auth.reason || 'invalid session token');
@@ -94,18 +114,30 @@ export async function resolveAuth(request, env, options = {}) {
     return { ok: true, mode: AUTH_SHOPIFY, shop, userId: String(auth.userId ?? ''), email: null };
   }
 
-  if (allow.includes(AUTH_STUDIO)) {
+  // A Studio cookie must never rescue a request that came from the Shopify admin.
+  //
+  // Without this guard, an embedded request whose `id_token` went stale or was dropped by an
+  // in-app link falls through to the Studio branch, which hard-codes the canonical shop and
+  // then draws on the app-level offline Admin token. A stylist with a Studio cookie opening
+  // the app in the DEV store would be shown production orders on a dev-store screen, and
+  // could file a passport against a production order from that session. It would also mean
+  // Shopify's per-staff permissions stop applying to embedded traffic the moment a token
+  // expires — silently, and only for the people who happen to hold a Studio cookie.
+  const inShopifyContext = SHOPIFY_CONTEXT_PARAMS.some((p) => params.has(p));
+
+  if (allow.includes(AUTH_STUDIO) && !inShopifyContext) {
     const token = readStudioCookie(request);
     if (token) {
-      // Revocation before verification: a token revoked in Studio must stop working here
-      // immediately, and checking that first means a revoked token cannot be distinguished
-      // from an invalid one by how long the response takes.
-      if (await isTokenRevoked(token, env.TOKEN_BLACKLIST)) {
-        return fail(401, 'session revoked');
-      }
-
+      // Signature FIRST, revocation second. The blacklist key is the token string, and that
+      // namespace is shared with Studio, where it also holds live `otp:<email>` login codes.
+      // Reading it with an unverified string makes this an existence oracle for those keys.
+      // See the note on `isTokenRevoked`.
       const payload = await verifyStudioJWT(token, env.JWT_SECRET);
-      if (!payload) {
+
+      // One reason string for both outcomes. Distinguishing "revoked" from "invalid" tells a
+      // prober which of the two they hit, and there is no caller who can act on the
+      // difference.
+      if (!payload || (await isTokenRevoked(token, env.TOKEN_BLACKLIST))) {
         return fail(401, 'invalid or expired studio session');
       }
 

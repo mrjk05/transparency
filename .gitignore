@@ -12,3 +12,10 @@ package-lock.json
 kadwood-db-backup.sql
 *-backup.sql
 backfill.sql
+
+# Local wrangler dev vars. This file was tracked from the initial commit until 2026-07-29
+# with a live SHOPIFY_API_SECRET in it, on a PUBLIC repo — that secret needs rotating in the
+# Shopify Partner dashboard, and it stays in the git history regardless. Never commit this
+# file: the Studio integration also expects JWT_SECRET here, which signs every Kadwood
+# Studio session for every client.
+.dev.vars

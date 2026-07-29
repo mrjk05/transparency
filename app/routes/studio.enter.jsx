@@ -1,46 +1,51 @@
 /**
- * `GET /studio/enter?token=<jwt>&next=<path>` — the door from Kadwood Studio.
+ * `GET /studio/enter?ticket=<opaque>&next=<path>` — the door from Kadwood Studio.
  *
- * Studio opens this URL with the stylist's existing JWT. We verify it once, exchange it for
- * an HttpOnly cookie, and bounce to a clean URL. From that point on the token is never in an
- * address bar, a browser history entry, or a `Referer` header again.
+ * Studio mints a short-lived, single-use ticket into the shared KV namespace
+ * (`studio_ticket:<opaque>` -> the stylist's JWT) and links here. We redeem it, verify the
+ * token behind it, and exchange it for an HttpOnly cookie.
  *
- * The token IS in the URL for the length of this one request, which is unavoidable — it is
- * the only channel a cross-origin link has. Three things bound the exposure: the redirect
- * strips it immediately, `Referrer-Policy: no-referrer` stops it reaching any subresource,
- * and `Cache-Control: no-store` keeps it out of shared caches. Worker request logs will
- * still contain it, which is the residual cost of this design and the reason Studio should
- * link here rather than embedding the token in anything longer-lived.
+ * The ticket exists because the obvious design — `?token=<jwt>` — puts the wrong thing in a
+ * URL. That JWT is not a hand-off credential; it is Studio's live API bearer, accepted by
+ * kadwood-ai-backend for seven days. This Worker logs at `head_sampling_rate = 1` with
+ * `persist = true`, so every sign-in URL is retained, and anyone who can read those logs
+ * would get full Studio API access to every client record — not merely passport access.
+ * An opaque ticket that dies on first use and expires in a minute is worth far less.
  */
 
 import { redirect } from '@remix-run/cloudflare';
-import { verifyStudioJWT, isTokenRevoked, serializeStudioCookie } from '../auth/studioSession.server';
+import {
+  redeemTicket,
+  verifyStudioJWT,
+  isTokenRevoked,
+  serializeStudioCookie,
+} from '../auth/studioSession.server';
 
 const DEFAULT_DESTINATION = '/app';
 
 export const loader = async ({ request, context }) => {
   const { env } = context.cloudflare;
   const url = new URL(request.url);
-  const token = url.searchParams.get('token');
 
+  const token = await redeemTicket(url.searchParams.get('ticket'), env.TOKEN_BLACKLIST);
   if (!token) {
-    return denied('This link is missing its sign-in token.');
+    // One message for malformed, unknown and already-spent. The differences are useful only
+    // to someone probing the endpoint.
+    return denied('That sign-in link is invalid, expired, or has already been used.');
   }
 
-  if (await isTokenRevoked(token, env.TOKEN_BLACKLIST)) {
-    return denied('That session has been signed out. Sign in to Studio again.');
-  }
-
+  // Signature before revocation — see the note on `isTokenRevoked`. The ticket only proves
+  // Studio issued it, not that the session behind it is still good.
   const payload = await verifyStudioJWT(token, env.JWT_SECRET);
-  if (!payload) {
-    return denied('That sign-in link is invalid or has expired.');
+  if (!payload || (await isTokenRevoked(token, env.TOKEN_BLACKLIST))) {
+    return denied('That Studio session is no longer valid. Sign in to Studio again.');
   }
 
   // Tie the cookie's lifetime to the token's own expiry rather than a fixed window, so the
   // two cannot disagree. A JWT that expires in ten minutes gets a ten-minute cookie.
   const maxAge = payload.exp - Math.floor(Date.now() / 1000);
   if (maxAge <= 0) {
-    return denied('That sign-in link has expired.');
+    return denied('That Studio session has expired.');
   }
 
   return redirect(safeDestination(url.searchParams.get('next')), {
@@ -56,15 +61,36 @@ export const loader = async ({ request, context }) => {
  * Constrain `next` to a path on this origin.
  *
  * Without this the endpoint is an open redirect that also happens to hand out a session
- * cookie first — a phisher could send `/studio/enter?token=…&next=https://evil.example` and
- * land a signed-in stylist on their page. Only a single leading slash is allowed: `//host`
- * and `/\host` are both protocol-relative URLs that browsers resolve off-origin.
+ * cookie first — a phisher could land a freshly signed-in stylist on their page.
+ *
+ * The control-character strip is the part that is easy to get wrong, and an earlier revision
+ * of this function did. The WHATWG URL parser removes U+0009, U+000A and U+000D from a URL
+ * *before* parsing it, so `/<TAB>/evil.example` — which starts with a single slash, is not
+ * `//` and is not `/\` — becomes protocol-relative `//evil.example` in the browser after
+ * every prefix check has passed. Verified against workerd, which forwards a raw HTAB in a
+ * `Location` header quite happily. CR and LF are stripped for a second reason: workerd
+ * rejects them outright, turning what should be a 401 page into a 500 from inside the loader.
+ *
+ * Prefix checks alone are not trusted to be exhaustive, so the result is also resolved
+ * against a throwaway origin and required to have stayed there.
  */
 export function safeDestination(next) {
   if (typeof next !== 'string' || next === '') return DEFAULT_DESTINATION;
-  if (!next.startsWith('/')) return DEFAULT_DESTINATION;
-  if (next.startsWith('//') || next.startsWith('/\\')) return DEFAULT_DESTINATION;
-  return next;
+
+  // eslint-disable-next-line no-control-regex
+  const cleaned = next.replace(/[\u0000-\u001F\u007F\u2028\u2029\uFEFF]/g, '');
+
+  if (!cleaned.startsWith('/') || cleaned.startsWith('//') || cleaned.startsWith('/\\')) {
+    return DEFAULT_DESTINATION;
+  }
+
+  try {
+    const resolved = new URL(cleaned, 'https://transparency.invalid');
+    if (resolved.origin !== 'https://transparency.invalid') return DEFAULT_DESTINATION;
+    return `${resolved.pathname}${resolved.search}`;
+  } catch {
+    return DEFAULT_DESTINATION;
+  }
 }
 
 function denied(message) {

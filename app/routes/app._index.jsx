@@ -1,6 +1,7 @@
 import React from "react";
 import { json } from "@remix-run/cloudflare";
-import { useLoaderData, useNavigate, useFetcher } from "@remix-run/react";
+import { useLoaderData, useLocation, useNavigate, useFetcher } from "@remix-run/react";
+import { withSearch } from "../utils/withSearch";
 import { Page, Layout, Card, BlockStack, Button, Text, Banner, ResourceList, ResourceItem, Avatar } from "@shopify/polaris";
 import { resolveAuth } from "../auth/resolveAuth.server";
 import { getAdminAccessToken } from "../auth/adminToken.server";
@@ -116,6 +117,7 @@ export default function OrderSelection() {
     const { isMockMode = false, orders: initialOrders = [], pageInfo, error } = loaderData || {};
     const navigate = useNavigate();
     const fetcher = useFetcher();
+    const { search } = useLocation();
 
     const [orders, setOrders] = React.useState(initialOrders);
     const [hasNextPage, setHasNextPage] = React.useState(pageInfo?.hasNextPage || false);
@@ -170,7 +172,7 @@ export default function OrderSelection() {
             subtitle="Choose an order to create a transparency report"
             primaryAction={{
                 content: "Create Report Without Order",
-                onAction: () => navigate('/app/create-report')
+                onAction: () => navigate(withSearch('/app/create-report', search))
             }}
         >
             <Layout>
@@ -181,7 +183,7 @@ export default function OrderSelection() {
                                 <Banner tone="warning">
                                     <p>Mock mode is enabled. Order selection is disabled in development.</p>
                                 </Banner>
-                                <Button onClick={() => navigate('/app/create-report')} primary>
+                                <Button onClick={() => navigate(withSearch('/app/create-report', search))} primary>
                                     Continue to Create Report (Mock Mode)
                                 </Button>
                             </BlockStack>

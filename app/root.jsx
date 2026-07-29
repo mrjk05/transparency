@@ -1,4 +1,14 @@
-import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData } from "@remix-run/react";
+import {
+  Form,
+  Links,
+  Meta,
+  Outlet,
+  Scripts,
+  ScrollRestoration,
+  isRouteErrorResponse,
+  useLoaderData,
+  useRouteError,
+} from "@remix-run/react";
 import { json } from "@remix-run/cloudflare";
 import polarisStyles from "@shopify/polaris/build/esm/styles.css";
 import { AppProvider } from "@shopify/polaris";
@@ -78,18 +88,82 @@ function StudioChrome({ children }) {
           fontSize: "14px",
           letterSpacing: "0.08em",
           textTransform: "uppercase",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "16px",
         }}
       >
-        Kadwood — Transparency Passport
+        <span>Kadwood — Transparency Passport</span>
+        {/*
+          POST, not a link: signing out changes state, and a GET logout fires from any image
+          tag on any page. This is also the only way to drop a session that is not yours —
+          Studio's own logout only revokes the token it knows about.
+        */}
+        <Form method="post" action="/studio/exit">
+          <button
+            type="submit"
+            style={{
+              background: "transparent",
+              border: "1px solid #E8C7C3",
+              color: "#E8C7C3",
+              borderRadius: "4px",
+              padding: "4px 12px",
+              font: "inherit",
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+          >
+            Sign out
+          </button>
+        </Form>
       </div>
       {children}
     </div>
   );
 }
-export function ErrorBoundary({ error }) {
+
+/**
+ * Remix v2 renders a route's `ErrorBoundary` export with NO props — the error comes from
+ * `useRouteError()`. The previous version destructured `{ error }`, which was always
+ * `undefined`, so `undefined instanceof Error` was false and `JSON.stringify(undefined)`
+ * returned `undefined`: every error rendered as "Application Error" above an empty box, with
+ * the actual reason discarded. That matters more now that routes throw 401 Responses with a
+ * message worth reading.
+ */
+export function ErrorBoundary() {
+  const error = useRouteError();
+
+  if (isRouteErrorResponse(error)) {
+    const isAuth = error.status === 401 || error.status === 403;
+    return (
+      <html lang="en">
+        <head>
+          <title>{isAuth ? "Not signed in" : `Error ${error.status}`}</title>
+          <Meta />
+          <Links />
+        </head>
+        <body>
+          <div style={{ padding: "40px", fontFamily: "system-ui, sans-serif", maxWidth: "480px" }}>
+            <h1 style={{ fontSize: "20px" }}>{isAuth ? "Not signed in" : `Error ${error.status}`}</h1>
+            <p style={{ color: "#6d7175", lineHeight: 1.5 }}>
+              {typeof error.data === "string" && error.data ? error.data : error.statusText}
+            </p>
+            {isAuth && (
+              <p style={{ color: "#6d7175", lineHeight: 1.5 }}>
+                Open this app from the Shopify admin, or from Kadwood Studio under Tools.
+              </p>
+            )}
+          </div>
+          <Scripts />
+        </body>
+      </html>
+    );
+  }
+
   console.error("ErrorBoundary caught:", error);
   return (
-    <html>
+    <html lang="en">
       <head>
         <title>Oh no!</title>
         <Meta />

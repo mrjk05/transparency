@@ -17,9 +17,17 @@ database_id = "9f04287a-eac4-4d4f-8b50-491891144de9" # Replace with actual ID
 binding = "R2"
 bucket_name = "kadwood-reports"
 
-# Shared with kadwood-ai-backend — SAME namespace id, deliberately. Studio's logout writes
-# the revoked JWT here; this Worker reads it on every Studio-authenticated request. A private
-# namespace would mean signing out of Studio left the passport wizard open for seven days.
+# Shared with kadwood-ai-backend — SAME namespace id, deliberately. It carries two things:
+# Studio's revoked JWTs (read on every Studio-authenticated request, so that signing out of
+# Studio does not leave the passport wizard open for seven days) and the single-use
+# `studio_ticket:<opaque>` hand-off entries Studio mints for /studio/enter.
+#
+# Note what else lives in this namespace on Studio's side: live `otp:<email>` sign-in codes
+# and WebAuthn challenges. KV bindings are read/write with no read-only mode, so this Worker
+# can reach them. Both lookups here are therefore constrained — the blacklist is only read
+# after a signature check, and ticket names are restricted to a fixed character class — so
+# neither can be pointed at a key it was not meant to see. Giving revocation its own
+# namespace is the better long-term fix and is recorded in the plan's open risks.
 [[kv_namespaces]]
 binding = "TOKEN_BLACKLIST"
 id = "d0595d16631b4f00a72b3fc67abe6e52"

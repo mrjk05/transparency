@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { json } from "@remix-run/cloudflare";
-import { useLoaderData, useSubmit, useNavigate, useActionData } from "@remix-run/react";
+import { useLoaderData, useLocation, useSubmit, useNavigate, useActionData } from "@remix-run/react";
+import { withSearch } from "../utils/withSearch";
 import { Page, Layout, Card, BlockStack, Button, Text, Banner } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { resolveAuth } from "../auth/resolveAuth.server";
@@ -515,10 +516,11 @@ export const action = async ({ request, context }) => {
 };
 
 export default function CreateReport() {
-    const { suppliers, isMockMode, orderDetails, lineItems, existingFormData } = useLoaderData();
+    const { suppliers, isMockMode, orderDetails, lineItems, existingFormData, error } = useLoaderData();
     const actionData = useActionData();
     const submit = useSubmit();
     const navigate = useNavigate();
+    const { search } = useLocation();
     const [collections, setCollections] = useState([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -558,8 +560,26 @@ export default function CreateReport() {
         }
     }, [actionData, navigate]);
 
+    // Same reasoning as the order list: on a 401 the loader returns no suppliers, so the
+    // wizard would render with an empty mill dropdown and no hint that the cause is the
+    // session rather than missing data.
+    if (error) {
+        return (
+            <Page title="Create Transparency Report">
+                <Layout>
+                    <Layout.Section>
+                        <Banner tone="critical" title="Not signed in">
+                            <p>{error}</p>
+                            <p>Open this app from the Shopify admin, or from Kadwood Studio under Tools.</p>
+                        </Banner>
+                    </Layout.Section>
+                </Layout>
+            </Page>
+        );
+    }
+
     return (
-        <Page title="Create Transparency Report" backAction={{ content: 'Orders', url: '/app' }}>
+        <Page title="Create Transparency Report" backAction={{ content: 'Orders', url: withSearch('/app', search) }}>
             <Layout>
                 {actionData?.reportId && (
                     <Layout.Section>
@@ -568,7 +588,7 @@ export default function CreateReport() {
                             tone="success"
                             action={{
                                 content: "View Report",
-                                onAction: () => navigate(`/app/passport/${actionData.reportId}`)
+                                onAction: () => navigate(withSearch(`/app/passport/${actionData.reportId}`, search))
                             }}
                         >
                             <p>Your transparency report has been created.</p>

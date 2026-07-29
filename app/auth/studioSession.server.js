@@ -15,8 +15,32 @@
  * dance below is copied from there for exactly that reason.
  */
 
-/** Name of the session cookie. Host-scoped; nothing else on the domain reads it. */
-export const STUDIO_COOKIE = 'kadwood_studio_session';
+/**
+ * Name of the session cookie.
+ *
+ * The `__Host-` prefix is load-bearing, not decoration. This app sits at
+ * transparency.kadwood.com alongside studio., members., ai-images. and sync. — and an XSS or
+ * takeover on ANY of those can otherwise write
+ * `Set-Cookie: kadwood_studio_session=<their JWT>; Domain=.kadwood.com`. `readStudioCookie`
+ * returns the first match in the header and browsers order equal-path cookies by creation
+ * time, so the injected one can quietly win and this app has no way to tell them apart.
+ * With the prefix, browsers refuse any `Set-Cookie` for this name that carries a `Domain`,
+ * which makes the shadowing impossible rather than merely unlikely.
+ */
+export const STUDIO_COOKIE = '__Host-kadwood_studio_session';
+
+/**
+ * KV key prefix for single-use hand-off tickets.
+ *
+ * Studio writes `studio_ticket:<opaque>` -> `<jwt>` with a short TTL and links the stylist to
+ * `/studio/enter?ticket=<opaque>`. The JWT itself never travels in a URL, because it is not a
+ * hand-off credential — it is Studio's live API bearer, accepted by
+ * `kadwood_ai/backend/src/workers/middleware/auth.ts` for seven days. A copy of it in this
+ * Worker's request log (which runs at `head_sampling_rate = 1` with `persist = true`) would
+ * hand every reader of those logs full Studio API access to every client record, not merely
+ * access to passports.
+ */
+export const TICKET_PREFIX = 'studio_ticket:';
 
 /**
  * Verify a Studio JWT.
@@ -84,6 +108,14 @@ export async function verifyStudioJWT(token, secret) {
  * token's seven days. One KV read per authenticated request is what makes a week-long
  * cookie defensible.
  *
+ * CALL THIS ONLY AFTER `verifyStudioJWT` HAS SUCCEEDED. The key is the token string itself,
+ * and `TOKEN_BLACKLIST` is shared with Studio, where the same namespace also holds live
+ * `otp:<email>` sign-in codes and `webauthn_challenge:*` entries. Reading it with an
+ * unverified, caller-supplied string turns this into an unauthenticated existence oracle for
+ * those keys — "is victim@kadwood.com mid-login right now?" — distinguishable by which of
+ * the two failure messages comes back. Requiring a valid signature first means the only keys
+ * an attacker can probe are ones they could already have forged, i.e. none.
+ *
  * Fails CLOSED: if the binding is missing we cannot know whether the token was revoked, and
  * the safe answer to "is this revoked?" under uncertainty is yes.
  */
@@ -93,6 +125,43 @@ export async function isTokenRevoked(token, kv) {
     return (await kv.get(token)) !== null;
   } catch {
     return true;
+  }
+}
+
+/**
+ * Redeem a single-use hand-off ticket for the JWT behind it.
+ *
+ * Returns the token, or null if the ticket is malformed, unknown, or already spent.
+ *
+ * Two honest limitations. KV has no compare-and-swap, so two requests racing on the same
+ * ticket can both read it before either delete lands — "single use" is best-effort, bounded
+ * by the ticket's own short TTL. And KV deletes are eventually consistent, so a redeemed
+ * ticket may briefly still resolve at another edge. Both are enormously better than the
+ * alternative, which is a seven-day bearer token sitting in a URL.
+ *
+ * The character-class check is not cosmetic: without it a caller could pass
+ * `../otp:victim@kadwood.com`-style input and use this route to read Studio's other key
+ * families out of the shared namespace.
+ */
+export async function redeemTicket(ticket, kv) {
+  if (typeof ticket !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(ticket)) return null;
+  if (!kv || typeof kv.get !== 'function') return null;
+
+  const key = `${TICKET_PREFIX}${ticket}`;
+  try {
+    const token = await kv.get(key);
+    if (token === null) return null;
+    // Spend it before returning. A failure here must not hand out the token twice as far as
+    // we can help it, but it also must not deny a legitimate first use, so it is swallowed.
+    try {
+      await kv.delete(key);
+    } catch (error) {
+      console.error('[studioSession] failed to spend ticket:', error);
+    }
+    return token;
+  } catch (error) {
+    console.error('[studioSession] ticket lookup failed:', error);
+    return null;
   }
 }
 

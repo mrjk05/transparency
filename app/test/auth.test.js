@@ -10,12 +10,15 @@ import {
 } from '../auth/resolveAuth.server';
 import {
   STUDIO_COOKIE,
+  TICKET_PREFIX,
   verifyStudioJWT,
   isTokenRevoked,
+  redeemTicket,
   readStudioCookie,
   serializeStudioCookie,
   clearStudioCookie,
 } from '../auth/studioSession.server';
+import { getAdminAccessToken } from '../auth/adminToken.server';
 import { safeDestination } from '../routes/studio.enter';
 
 const JWT_SECRET = 'shared-with-kadwood-ai-backend';
@@ -58,9 +61,14 @@ async function mintJWT(payload, { secret = JWT_SECRET, alg = 'HS256' } = {}) {
 const future = () => Math.floor(Date.now() / 1000) + 3600;
 const past = () => Math.floor(Date.now() / 1000) - 60;
 
-function fakeKV(revoked = []) {
+function fakeKV(revoked = [], entries = {}) {
   const set = new Set(revoked);
-  return { get: async (key) => (set.has(key) ? '1' : null) };
+  const store = new Map(Object.entries(entries));
+  return {
+    get: async (key) => (set.has(key) ? '1' : store.has(key) ? store.get(key) : null),
+    delete: async (key) => { store.delete(key); },
+    has: (key) => store.has(key),
+  };
 }
 
 function makeEnv(overrides = {}) {
@@ -248,7 +256,9 @@ describe('resolveAuth', () => {
         makeEnv({ TOKEN_BLACKLIST: fakeKV([token]) })
       );
       expect(result.ok).toBe(false);
-      expect(result.reason).toBe('session revoked');
+      // Deliberately the SAME string as an invalid token: distinguishing the two turns the
+      // shared KV namespace into an existence oracle for Studio's live OTP keys.
+      expect(result.reason).toBe('invalid or expired studio session');
     });
 
     it('rejects an expired token', async () => {
@@ -316,7 +326,8 @@ describe('resolveAuth', () => {
     });
 
     it('requires a valid shopDomain', async () => {
-      for (const q of ['', '?shopDomain=', '?shopDomain=evil.com']) {
+      for (const q of ['', '?shopDomain=', '?shopDomain=evil.com',
+                       '?shopDomain=attacker.myshopify.com']) {
         const result = await resolveAuth(
           req(`https://t.test/api/studio/reports${q}`, { [ADMIN_SECRET_HEADER]: ADMIN_SECRET }),
           makeEnv(),
