@@ -6,3 +6,16 @@ public/build
 .wrangler
 .cache
 package-lock.json
+
+# Production D1 dumps and generated migration SQL. These carry live Shopify
+# customer and order IDs — never commit them.
+kadwood-db-backup.sql
+*-backup.sql
+backfill.sql
+
+# Local wrangler dev vars. Tracked from the initial commit until 2026-07-29, though only
+# ever with placeholder values (`test_api_secret`) — nothing live was committed. Untracked
+# now because the risk is forward-looking: this repo is PUBLIC, and the Studio integration
+# expects JWT_SECRET in this file, which signs every Kadwood Studio session for every client.
+# See .dev.vars.example for the shape.
+.dev.vars

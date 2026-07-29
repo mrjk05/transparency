@@ -153,8 +153,38 @@ customer ID and deliver its PDF to a real customer.
 
 ### Transparency — human (Studio JWT cookie)
 
-- `GET /studio/enter?token=<jwt>` → verify, set HttpOnly cookie, redirect to a clean URL
-- `/studio/*` → order picker, wizard, passport list
+- `GET /studio/enter?ticket=<opaque>&next=<path>` → redeem, verify, set HttpOnly cookie,
+  redirect to a clean same-origin path
+- `POST /studio/exit` → clear the cookie (the only way to drop a session you did not open)
+- `/app/*` → order picker, wizard, passport preview — **one** route tree, forked only at
+  `resolveAuth()` and the root shell
+
+**The hand-off is a ticket, not the JWT.** Studio writes a single-use entry into the shared
+KV namespace and links to it; transparency redeems it and deletes it. The exact contract,
+because this is the only place the other repo can read it:
+
+| | |
+|---|---|
+| Key | `studio_ticket:<opaque>` where `<opaque>` matches `[A-Za-z0-9_-]{32,128}` — anything else is rejected without a KV read, so the ticket can never be aimed at another key family in this shared namespace |
+| Value | `{"token": "<the stylist's JWT>", "expiresAt": <epoch milliseconds>}` — **JSON, not the bare token** |
+| TTL | Studio should also pass KV's own `expirationTtl` (60s is ample). `expiresAt` is re-checked on redemption regardless, because transparency is the side that depends on the ticket being short-lived |
+| Link | `GET /studio/enter?ticket=<opaque>&next=<same-origin path>` |
+
+A bare JWT as the value fails `JSON.parse`, and it fails *after* the ticket has been spent —
+so the stylist gets "invalid, expired, or already used" and the ticket is gone. Get the shape
+right the first time.
+
+Putting the JWT in the URL instead was the obvious design and it
+is wrong: that token is Studio's live API bearer, good for seven days against
+`kadwood-ai-backend`, and this Worker logs at `head_sampling_rate = 1` with `persist = true`,
+so every sign-in URL is retained. Anyone able to read those logs would get full Studio API
+access to every client record rather than access to passports. **K2 must mint the ticket** —
+until it does, `/studio/enter` has nothing to redeem and the Studio door is closed.
+
+Single-use is best-effort, honestly: KV has no compare-and-swap, so two requests racing the
+same ticket can both read it before either delete lands, and KV deletes are eventually
+consistent. Bounded by the ticket's own TTL, and enormously better than a seven-day bearer in
+a URL.
 
 ### Studio
 
@@ -243,8 +273,16 @@ Phase two (not scheduled): supplier and fabric-collection management UI.
 
 1. **The spike gates decision 5.** If A4 output from the HTML template is poor, revisit
    before T1 lands.
-2. **Which order is primary?** Depends on whether the deposit *and* balance orders both
-   carry the `custom.fabric_*` metafields. Not answerable from code — check one real pair.
+2. ~~**Which order is primary?**~~ **Answered 2026-07-29: both the deposit and the balance
+   order carry the `custom.fabric_*` metafields.** So metafield presence cannot pick between
+   them, and the rule is instead **the earliest order by `created_at` is primary**. Three
+   reasons: it is the order the commission was actually placed under and the reference the
+   client used first; it is stable, whereas making the balance order primary would leave a
+   passport authored between the two payments with no primary at all and then silently
+   change its own title and filename once the balance arrived; and it is deterministic
+   without consulting Shopify. Auto-population is unaffected — the wizard can read the
+   fabric fields off either order — but where the two disagree, the deposit's values are the
+   ones chosen at commissioning and win.
 3. **Decision 16 weakens gap detection.** With no gate, alterations and accessories read as
    "missing a passport", so the Orders list stops being a reliable way to spot a real gap.
    Revisit once the real order mix is visible.
@@ -257,3 +295,72 @@ Phase two (not scheduled): supplier and fabric-collection management UI.
 6. **Separate follow-up, other repo:** Size You does not check `TOKEN_BLACKLIST` either — a
    token revoked in Studio keeps working there for up to 7 days. Same one-line fix. Issue on
    `size_you_generator`, not part of this work.
+
+### Found while building T2
+
+7. **Shopify session tokens expire after 60 seconds, and nothing refreshes them.**
+   `verifySessionToken` reads `id_token` from the *URL*, which Shopify sets once on the
+   initial embedded load. Every later loader call — "Load Next 10 Orders", navigating to the
+   wizard, submitting it — reuses that same stale token and fails its `exp` check about a
+   minute in. App Bridge is what normally re-mints it, and although `@shopify/app-bridge-react`
+   is imported in `app.create-report.jsx` neither `TitleBar` nor `useAppBridge` is rendered,
+   and no App Bridge script tag exists, so it is not loaded at all. This predates T2 and T2
+   does not change it. **It is the reason `/api/collections` and `/api/geocode` were left
+   unauthenticated** (see 8) and it should be fixed before the embedded path is relied on.
+8. **Two API routes are still unauthenticated.** `/api/collections` (fabric catalogue reads,
+   enumerable by `millId`) and `/api/geocode` (an open proxy to Nominatim — abuse of it gets
+   Kadwood's egress IP blocked by OSM, not Kadwood's data leaked). Both are called by
+   client-side `fetch` from the wizard with no credential attached. Under Studio the session
+   cookie would cover them for free; under Shopify there is nothing to attach except a stale
+   `id_token`, so adding `resolveAuth` now would break the embedded wizard. Close these
+   together with 7.
+9. **The order-metafield writeback is dead code that would throw.**
+   `app.create-report.jsx` calls `admin.graphql(...)` in its action, but `admin` is never
+   defined in that scope — it is a `ReferenceError` waiting behind
+   `if (rawData.shopify_order_id_graphql)`, a field nothing ever sets. The URL it would write
+   is malformed too (`https://${env.SHOPIFY_APP_URL}/…`, where `SHOPIFY_APP_URL` already
+   carries the scheme). Unreachable today; delete or repair it in T3, which rewrites this
+   action anyway.
+10. **`/app/passport/:id` is authenticated but not shop-scoped.** T2 closed the hole where
+   any holder of a report UUID could read it. The scope has to wait for T3: nothing writes
+   `reports.shop_domain` until then, so a scoped lookup would 404 every passport created in
+   the meantime.
+
+### Raised by the T2 reviews, deliberately not fixed in T2
+
+11. **`SHOPIFY_ADMIN_TOKEN` is write-capable.** `wrangler.toml` declares `write_customers`
+   and `write_orders` alongside the reads, so an offline token minted with the app's scopes
+   can change customer and order records. Through Studio every stylist reads Shopify with
+   that one grant, and Studio's gate is an email-domain check with auto-provisioning on first
+   OTP — no allowlist, no role, no approval. Mint the offline token with a read-only scope
+   set if Shopify permits it for this app, and revisit Studio's provisioning separately.
+12. **Revocation shares a namespace with Studio's login secrets.** `TOKEN_BLACKLIST` also
+   holds live `otp:<email>` codes and WebAuthn challenges, and KV bindings are read/write
+   with no read-only mode. T2 constrains both of its lookups so neither can be aimed at a key
+   it should not see, but the binding itself is broader than it needs to be. Give revocation
+   its own namespace.
+13. **Session fixation is narrowed, not eliminated.** `/studio/enter` still sets a session on
+   an unauthenticated GET, and `SameSite=Lax` permits exactly that navigation cross-site, so
+   a link can still plant a session someone else opened. The ticket makes it single-use and
+   short-lived, and `POST /studio/exit` gives the victim a way out. Closing it properly needs
+   a nonce bound to the browser that started the flow.
+14. **Passport viewing depends on a live session, and sessions do not survive 60 seconds in
+   the embedded app** (see 7). T2 fixes the four in-app links that dropped `id_token`
+   entirely, but a hard reload of `/app/passport/:id` in the Shopify admin still 401s. It now
+   says so — root's `ErrorBoundary` renders the reason instead of a blank "Application
+   Error" — but the real fix is 7.
+15. **`frame-ancestors` is untested against the real admin.** `main` had no CSP at all, so a
+   missing ancestor origin would render the embedded app as a blank frame — a worse outage
+   than anything T2 fixes, and nothing in the diff or the tests can catch it. **Open the app
+   once in the live Shopify admin before relying on the embedded path.**
+16. **Machine mode and the offline token disagree about `kaddev1`.** `MACHINE_SHOPS` allows
+   it; `getAdminAccessToken` releases the offline token only for the canonical store. So a
+   machine-mode call scoped to the dev store authenticates and then gets an empty order list
+   rather than an error. That is the fail-closed direction and it is deliberate, but it will
+   look like a bug to whoever hits it first.
+17. **`TOKEN_BLACKLIST` also holds Studio's live login secrets.** `otp:<email>` sign-in codes
+   and `webauthn_challenge:*` entries live in the same namespace this Worker now binds, and
+   KV bindings are read/write with no read-only mode. Both lookups here are constrained so
+   neither can be aimed at those keys — the blacklist is read only after a signature check,
+   and ticket names are restricted to `[A-Za-z0-9_-]{32,128}` — but the binding is broader
+   than it needs to be. Splitting revocation into its own namespace is the real fix.

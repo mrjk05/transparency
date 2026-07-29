@@ -1,13 +1,36 @@
 import { json } from "@remix-run/cloudflare";
-import { useLoaderData } from "@remix-run/react";
+import { useLoaderData, useLocation } from "@remix-run/react";
+import { withSearch } from "../utils/withSearch";
 import { useState } from "react";
 import { Page, Layout, Card, Button, BlockStack } from "@shopify/polaris";
 import { TransparencyPassportHTML } from "../components/TransparencyPassportHTML";
+import { resolveAuth } from "../auth/resolveAuth.server";
 
-export const loader = async ({ params, context }) => {
+export const loader = async ({ params, request, context }) => {
     const { id } = params;
     const { env } = context.cloudflare;
 
+    // This route had no authentication at all: anyone holding a report UUID could read a
+    // named customer's order reference, their garment, and the full supply chain behind it.
+    // The IDs are unguessable, but "unguessable" is not an access control, and they are
+    // returned to the browser by the create-report action.
+    //
+    // The MOCK_MODE gate matches the two sibling routes, and skipping auth here is not a
+    // production risk: MOCK_MODE is set only in `.dev.vars`, which `wrangler deploy` does not
+    // upload, and it is absent from `wrangler.toml [vars]`. Without the gate the whole local
+    // wizard is unusable — it submits successfully and then 401s on the page it navigates to.
+    if (env.MOCK_MODE !== "true") {
+        const auth = await resolveAuth(request, env);
+        if (!auth.ok) {
+            throw new Response(`Unauthorized: ${auth.reason}`, { status: auth.status });
+        }
+    }
+
+    // Deliberately NOT scoped by shop yet. Nothing writes `reports.shop_domain` until T3, so
+    // every passport created between now and then has NULL there and a scoped lookup would
+    // 404 the page the stylist just submitted. The residual exposure is a dev-store stylist
+    // reading a production passport, which is bounded by every account being Kadwood staff.
+    // T3 adds the scope once the column is reliably populated.
     const report = await env.DB.prepare("SELECT * FROM reports WHERE id = ?").bind(id).first();
 
     if (!report) {
@@ -49,6 +72,7 @@ export default function PassportPreview() {
     const { report } = useLoaderData();
     const answers = useLoaderData().answers;
     const [isPrinting, setIsPrinting] = useState(false);
+    const { search } = useLocation();
 
     // Reconstruct scores object for the component
     const scores = {
@@ -96,7 +120,7 @@ export default function PassportPreview() {
     }
 
     return (
-        <Page title="Passport Preview" backAction={{ content: "Back", url: "/app/create-report" }}>
+        <Page title="Passport Preview" backAction={{ content: "Back", url: withSearch("/app/create-report", search) }}>
             <Layout>
                 <Layout.Section>
                     <Card>

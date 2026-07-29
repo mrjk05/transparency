@@ -1,9 +1,11 @@
 import { useState, useCallback, useEffect } from "react";
 import { json } from "@remix-run/cloudflare";
-import { useLoaderData, useSubmit, useNavigate, useActionData } from "@remix-run/react";
+import { useLoaderData, useLocation, useSubmit, useNavigate, useActionData } from "@remix-run/react";
+import { withSearch } from "../utils/withSearch";
 import { Page, Layout, Card, BlockStack, Button, Text, Banner } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
-import { verifySessionToken } from "../auth/verifySessionToken.server";
+import { resolveAuth } from "../auth/resolveAuth.server";
+import { getAdminAccessToken } from "../auth/adminToken.server";
 import { TransparencyWizard } from "../components/TransparencyWizard";
 import { renderToStream, Document, Page as PdfPage, Text as PdfText, View, StyleSheet } from "@react-pdf/renderer";
 import { SCORING_CONFIG, MATERIAL_CERTIFICATIONS } from "../config/scoring";
@@ -75,109 +77,87 @@ export const loader = async ({ request, context }) => {
     let lineItems = [];
 
     if (!isMockMode) {
-        // Verify session token for embedded app
-        const auth = await verifySessionToken(request, env.SHOPIFY_API_SECRET);
+        const auth = await resolveAuth(request, env);
 
         if (!auth.ok) {
-            return json({ error: `Unauthorized: ${auth.reason}` }, { status: 401 });
+            return json({ error: `Unauthorized: ${auth.reason}` }, { status: auth.status });
         }
 
-        console.log(`[Loader] Authenticated shop: ${auth.shop}, user: ${auth.userId}`);
+        console.log(`[Loader] Authenticated via ${auth.mode}: shop ${auth.shop}, user ${auth.userId}`);
 
         // Fetch order details if orderId is provided
         if (orderId) {
             try {
-                const sessionToken = url.searchParams.get('id_token');
+                const accessToken = await getAdminAccessToken(request, env, auth);
 
-                if (sessionToken) {
-                    // Exchange session token for access token
-                    const tokenExchangeResponse = await fetch(`https://${auth.shop}/admin/oauth/access_token`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
-                            client_id: env.SHOPIFY_API_KEY,
-                            client_secret: env.SHOPIFY_API_SECRET,
-                            grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-                            subject_token: sessionToken,
-                            subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-                            requested_token_type: 'urn:shopify:params:oauth:token-type:online-access-token',
-                        }),
-                    });
-
-                    if (tokenExchangeResponse.ok) {
-                        const tokenData = await tokenExchangeResponse.json();
-                        const accessToken = tokenData.access_token;
-
-                        // Fetch specific order
-                        const query = `
-                            query GetOrder($id: ID!) {
-                                order(id: $id) {
-                                    id
-                                    name
-                                    customer {
-                                        displayName
-                                        email
-                                    }
-                                    fabricSupplier: metafield(namespace: "custom", key: "fabric_supplier") {
-                                        value
-                                    }
-                                    fabricBunch: metafield(namespace: "custom", key: "fabric_bunch") {
-                                        value
-                                    }
-                                    fabricCode: metafield(namespace: "custom", key: "fabric_code") {
-                                        value
-                                    }
-                                    lineItems(first: 50) {
-                                        edges {
-                                            node {
+                if (accessToken) {
+                    // Fetch specific order
+                    const query = `
+                        query GetOrder($id: ID!) {
+                            order(id: $id) {
+                                id
+                                name
+                                customer {
+                                    displayName
+                                    email
+                                }
+                                fabricSupplier: metafield(namespace: "custom", key: "fabric_supplier") {
+                                    value
+                                }
+                                fabricBunch: metafield(namespace: "custom", key: "fabric_bunch") {
+                                    value
+                                }
+                                fabricCode: metafield(namespace: "custom", key: "fabric_code") {
+                                    value
+                                }
+                                lineItems(first: 50) {
+                                    edges {
+                                        node {
+                                            id
+                                            title
+                                            quantity
+                                            variant {
                                                 id
                                                 title
-                                                quantity
-                                                variant {
-                                                    id
-                                                    title
-                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        `;
+                        }
+                    `;
 
-                        const response = await fetch(`https://${auth.shop}/admin/api/2024-01/graphql.json`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'X-Shopify-Access-Token': accessToken,
-                            },
-                            body: JSON.stringify({
-                                query,
-                                variables: { id: orderId }
-                            }),
-                        });
+                    const response = await fetch(`https://${auth.shop}/admin/api/2024-01/graphql.json`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Shopify-Access-Token': accessToken,
+                        },
+                        body: JSON.stringify({
+                            query,
+                            variables: { id: orderId }
+                        }),
+                    });
 
-                        if (response.ok) {
-                            const data = await response.json();
-                            if (data.data && data.data.order) {
-                                orderDetails = data.data.order;
-                                lineItems = data.data.order.lineItems.edges.map(edge => ({
-                                    id: edge.node.id,
-                                    title: edge.node.title,
-                                    quantity: edge.node.quantity,
-                                    variant: edge.node.variant
-                                }));
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.data && data.data.order) {
+                            orderDetails = data.data.order;
+                            lineItems = data.data.order.lineItems.edges.map(edge => ({
+                                id: edge.node.id,
+                                title: edge.node.title,
+                                quantity: edge.node.quantity,
+                                variant: edge.node.variant
+                            }));
 
-                                // Log metafields for debugging
-                                if (orderDetails) {
-                                    console.log(`[Loader] Fetched order ${orderDetails.name}`);
-                                    console.log(`[Loader] Raw metafields:`, {
-                                        fabricSupplier: orderDetails.fabricSupplier,
-                                        fabricBunch: orderDetails.fabricBunch,
-                                        fabricCode: orderDetails.fabricCode
-                                    });
-                                }
+                            // Log metafields for debugging
+                            if (orderDetails) {
+                                console.log(`[Loader] Fetched order ${orderDetails.name}`);
+                                console.log(`[Loader] Raw metafields:`, {
+                                    fabricSupplier: orderDetails.fabricSupplier,
+                                    fabricBunch: orderDetails.fabricBunch,
+                                    fabricCode: orderDetails.fabricCode
+                                });
                             }
                         }
                     }
@@ -394,11 +374,10 @@ export const action = async ({ request, context }) => {
     const isMockMode = env.MOCK_MODE === "true";
 
     if (!isMockMode) {
-        // Verify session token for embedded app
-        const auth = await verifySessionToken(request, env.SHOPIFY_API_SECRET);
+        const auth = await resolveAuth(request, env);
 
         if (!auth.ok) {
-            return json({ error: `Unauthorized: ${auth.reason}` }, { status: 401 });
+            return json({ error: `Unauthorized: ${auth.reason}` }, { status: auth.status });
         }
     }
 
@@ -537,10 +516,11 @@ export const action = async ({ request, context }) => {
 };
 
 export default function CreateReport() {
-    const { suppliers, isMockMode, orderDetails, lineItems, existingFormData } = useLoaderData();
+    const { suppliers, isMockMode, orderDetails, lineItems, existingFormData, error } = useLoaderData();
     const actionData = useActionData();
     const submit = useSubmit();
     const navigate = useNavigate();
+    const { search } = useLocation();
     const [collections, setCollections] = useState([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -580,8 +560,26 @@ export default function CreateReport() {
         }
     }, [actionData, navigate]);
 
+    // Same reasoning as the order list: on a 401 the loader returns no suppliers, so the
+    // wizard would render with an empty mill dropdown and no hint that the cause is the
+    // session rather than missing data.
+    if (error) {
+        return (
+            <Page title="Create Transparency Report">
+                <Layout>
+                    <Layout.Section>
+                        <Banner tone="critical" title="Not signed in">
+                            <p>{error}</p>
+                            <p>Open this app from the Shopify admin, or from Kadwood Studio under Tools.</p>
+                        </Banner>
+                    </Layout.Section>
+                </Layout>
+            </Page>
+        );
+    }
+
     return (
-        <Page title="Create Transparency Report" backAction={{ content: 'Orders', url: '/app' }}>
+        <Page title="Create Transparency Report" backAction={{ content: 'Orders', url: withSearch('/app', search) }}>
             <Layout>
                 {actionData?.reportId && (
                     <Layout.Section>
@@ -590,7 +588,7 @@ export default function CreateReport() {
                             tone="success"
                             action={{
                                 content: "View Report",
-                                onAction: () => navigate(`/app/passport/${actionData.reportId}`)
+                                onAction: () => navigate(withSearch(`/app/passport/${actionData.reportId}`, search))
                             }}
                         >
                             <p>Your transparency report has been created.</p>

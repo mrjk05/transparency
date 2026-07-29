@@ -17,6 +17,29 @@ database_id = "9f04287a-eac4-4d4f-8b50-491891144de9" # Replace with actual ID
 binding = "R2"
 bucket_name = "kadwood-reports"
 
+# Shared with kadwood-ai-backend — SAME namespace id, deliberately. It carries two things:
+# Studio's revoked JWTs (read on every Studio-authenticated request, so that signing out of
+# Studio does not leave the passport wizard open for seven days) and the single-use
+# `studio_ticket:<opaque>` hand-off entries Studio mints for /studio/enter.
+#
+# This namespace is shared and holds more than these two key families, so both lookups here
+# are constrained so neither can be aimed at a key it was not meant to see: the blacklist is
+# read only after a signature check, and ticket names are restricted to a fixed character
+# class. Splitting the namespace is the better long-term fix — see the plan's open risks.
+# (This repo is public; the detail of what else is in there belongs in the plan, not here.)
+[[kv_namespaces]]
+binding = "TOKEN_BLACKLIST"
+id = "d0595d16631b4f00a72b3fc67abe6e52"
+
+# Secrets (set via: npx wrangler secret put <NAME>)
+# SHOPIFY_API_KEY       — embedded app client id
+# SHOPIFY_API_SECRET    — signs the embedded app's session tokens
+# JWT_SECRET            — MUST be byte-identical to kadwood-ai-backend's, or every Studio
+#                         hand-off fails at /studio/enter
+# STUDIO_ADMIN_SECRET   — must match Studio's TRANSPARENCY_ADMIN_SECRET
+# SHOPIFY_ADMIN_TOKEN   — offline Admin API token; the only way to read orders when the
+#                         caller arrived through Studio and has no id_token to exchange
+
 [site]
 bucket = "./public"
 
