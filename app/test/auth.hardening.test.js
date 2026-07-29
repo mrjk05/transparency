@@ -74,6 +74,9 @@ const makeEnv = (overrides = {}) => ({
 
 const req = (url, headers = {}) => new Request(url, { headers });
 
+const ticketValue = (token, expiresAt = Date.now() + 60_000) =>
+  JSON.stringify({ token, expiresAt });
+
 describe('safeDestination - control-character smuggling', () => {
   // The WHATWG URL parser strips U+0009/U+000A/U+000D from a URL BEFORE parsing it. So
   // `/<TAB>/evil.example` starts with a single slash, is not `//`, is not `/\` - and still
@@ -107,9 +110,41 @@ describe('safeDestination - control-character smuggling', () => {
     expect(safeDestination('/\u2029/evil.example')).toBe('/app');
   });
 
+  // Fixing the tab bypass by resolving against a probe origin introduced a WORSE hole than
+  // it closed: WHATWG path normalisation can synthesise a leading `//` from input that had
+  // none. `/..//evil.example` normalises to the segments ['', 'evil.example'], which
+  // serialise as `//evil.example` — a same-origin resolved URL whose *pathname* is
+  // protocol-relative once it is emitted as a bare Location. Returning `next` untouched, as
+  // the very first version did, was accidentally safe against this.
+  it('refuses a path that NORMALISES into a protocol-relative URL', () => {
+    for (const bad of [
+      '/..//evil.example',
+      '/.//evil.example',
+      '/../..//evil.example',
+      '/app/..//evil.example',
+      '/%2e%2e//evil.example',
+      '/..//user@evil.example',
+      '/.\u0009.//evil.example',
+    ]) {
+      expect(safeDestination(bad)).toBe('/app');
+    }
+  });
+
+  // A Studio hand-off carrying Shopify's parameters poisons every later in-app link via
+  // `withSearch`, and locks the session out of the Studio branch of resolveAuth.
+  it('strips Shopify context parameters from the destination', () => {
+    expect(safeDestination('/app?shop=kadwood.myshopify.com')).toBe('/app');
+    expect(safeDestination('/app?host=abc&embedded=1&id_token=x')).toBe('/app');
+    expect(safeDestination('/app?orderId=7&shop=x')).toBe('/app?orderId=7');
+  });
+
+  it('keeps a fragment', () => {
+    expect(safeDestination('/app/passport/abc#supply-chain')).toBe('/app/passport/abc#supply-chain');
+  });
+
   it('still allows an ordinary path with a query', () => {
-    expect(safeDestination('/app/create-report?orderId=1&host=x')).toBe(
-      '/app/create-report?orderId=1&host=x'
+    expect(safeDestination('/app/create-report?orderId=1&cursor=abc')).toBe(
+      '/app/create-report?orderId=1&cursor=abc'
     );
   });
 
@@ -121,6 +156,11 @@ describe('safeDestination - control-character smuggling', () => {
       'https://evil.example',
       '/app#frag',
       '/app?next=//evil.example',
+      // The normalisation family. Without these the suite passed while the redirect was open.
+      '/..//evil.example',
+      '/.//evil.example',
+      '/app/..//evil.example',
+      '/..//user@evil.example',
     ]) {
       const resolved = new URL(safeDestination(candidate), 'https://ok.invalid');
       expect(resolved.origin).toBe('https://ok.invalid');
@@ -132,7 +172,7 @@ describe('redeemTicket', () => {
   const TICKET = 'a'.repeat(43);
 
   it('returns the token behind a valid ticket and spends it', async () => {
-    const kv = fakeKV([], { [`${TICKET_PREFIX}${TICKET}`]: 'the.jwt.here' });
+    const kv = fakeKV([], { [`${TICKET_PREFIX}${TICKET}`]: ticketValue('the.jwt.here') });
     expect(await redeemTicket(TICKET, kv)).toBe('the.jwt.here');
     expect(kv.has(`${TICKET_PREFIX}${TICKET}`)).toBe(false);
     expect(await redeemTicket(TICKET, kv)).toBeNull();
@@ -162,9 +202,34 @@ describe('redeemTicket', () => {
     expect(kv.has('otp:victim@kadwood.com')).toBe(true);
   });
 
-  it('returns null when the binding is missing', async () => {
+  it('enforces the ticket lifetime locally', async () => {
+    // Studio is expected to set KV's own expirationTtl, but this is the side that depends on
+    // the ticket being short-lived, so it re-checks rather than trusting a repo that has not
+    // been written yet.
+    const kv = fakeKV([], { [`${TICKET_PREFIX}${TICKET}`]: ticketValue('the.jwt', Date.now() - 1) });
+    expect(await redeemTicket(TICKET, kv)).toBeNull();
+  });
+
+  it('rejects a malformed stored value', async () => {
+    for (const raw of ['not json', '{}', '{"token":123,"expiresAt":0}', 'null',
+                       JSON.stringify({ token: 'x' })]) {
+      const kv = fakeKV([], { [`${TICKET_PREFIX}${TICKET}`]: raw });
+      expect(await redeemTicket(TICKET, kv)).toBeNull();
+    }
+  });
+
+  it('refuses the redemption when the ticket cannot be spent', async () => {
+    // Swallowing this would leave the ticket redeemable for the rest of its life in exactly
+    // the case where that is least acceptable.
+    const kv = fakeKV([], { [`${TICKET_PREFIX}${TICKET}`]: ticketValue('the.jwt') });
+    kv.delete = async () => { throw new Error('kv down'); };
+    expect(await redeemTicket(TICKET, kv)).toBeNull();
+  });
+
+  it('returns null when the binding is missing or cannot delete', async () => {
     expect(await redeemTicket(TICKET, undefined)).toBeNull();
     expect(await redeemTicket(TICKET, {})).toBeNull();
+    expect(await redeemTicket(TICKET, { get: async () => 'x' })).toBeNull();
   });
 });
 

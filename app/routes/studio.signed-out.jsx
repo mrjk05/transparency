@@ -1,3 +1,5 @@
+import { withSecurityHeaders } from '../utils/responseHeaders';
+
 /**
  * Where `/studio/exit` lands. Deliberately a plain page with no session and no Polaris
  * chrome — whatever went wrong, this has to render for someone holding no valid cookie.
@@ -30,9 +32,9 @@ export const loader = async () =>
 </body>
 </html>`,
     {
-      headers: {
+      headers: withSecurityHeaders({
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
-      },
+      }),
     }
   );

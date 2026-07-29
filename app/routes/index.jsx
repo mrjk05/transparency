@@ -1,3 +1,5 @@
+import { withSecurityHeaders } from '../utils/responseHeaders';
+
 export const loader = async () => {
     // Return plain HTML for testing
     return new Response(
@@ -54,9 +56,9 @@ export const loader = async () => {
 </body>
 </html>`,
         {
-            headers: {
+            headers: withSecurityHeaders({
                 'Content-Type': 'text/html',
-            },
+            }),
         }
     );
 };

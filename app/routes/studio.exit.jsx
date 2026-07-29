@@ -6,20 +6,32 @@
  * token Studio knows about, and only once the stylist thinks to go and do it there. If
  * someone ever lands here on a session that is not theirs, they need a control on this page.
  *
- * POST rather than GET on purpose: it changes state, and a GET logout can be triggered by
- * any image tag on any page.
+ * POST rather than GET is necessary but NOT sufficient: it stops an `<img>` triggering a
+ * sign-out, but a cross-origin auto-submitting form reaches a POST endpoint just as easily,
+ * and `SameSite=Lax` does not restrain an action that only sets an expiring cookie. Hence
+ * the same-origin check. Forced logout is nuisance-grade rather than dangerous, but the
+ * check costs one header read.
  */
 
 import { redirect } from '@remix-run/cloudflare';
 import { clearStudioCookie } from '../auth/studioSession.server';
+import { isSameOriginRequest, withSecurityHeaders } from '../utils/responseHeaders';
 
-export const action = async () =>
-  redirect('/studio/signed-out', {
+export const action = async ({ request }) => {
+  if (!isSameOriginRequest(request)) {
+    return new Response('Cross-origin sign-out refused', {
+      status: 403,
+      headers: withSecurityHeaders({ 'Cache-Control': 'no-store' }),
+    });
+  }
+
+  return redirect('/studio/signed-out', {
     headers: {
       'Set-Cookie': clearStudioCookie(),
       'Cache-Control': 'no-store',
     },
   });
+};
 
 // A bare GET has nothing to show and must not sign anyone out as a side effect.
 export const loader = async () => redirect('/app');

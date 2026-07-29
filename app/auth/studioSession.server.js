@@ -131,36 +131,51 @@ export async function isTokenRevoked(token, kv) {
 /**
  * Redeem a single-use hand-off ticket for the JWT behind it.
  *
- * Returns the token, or null if the ticket is malformed, unknown, or already spent.
+ * The stored value is `{"token": "<jwt>", "expiresAt": <epoch ms>}`. Studio should also set
+ * KV's own `expirationTtl`, but the lifetime is re-checked HERE because that is the side
+ * that depends on it: a ticket minted without a TTL by a future version of Studio would
+ * otherwise sit in KV as a permanent sign-in credential, and nothing in this repo would
+ * notice. Enforce what you rely on.
  *
- * Two honest limitations. KV has no compare-and-swap, so two requests racing on the same
- * ticket can both read it before either delete lands — "single use" is best-effort, bounded
- * by the ticket's own short TTL. And KV deletes are eventually consistent, so a redeemed
- * ticket may briefly still resolve at another edge. Both are enormously better than the
- * alternative, which is a seven-day bearer token sitting in a URL.
+ * Returns the token, or null if the ticket is malformed, unknown, expired, already spent, or
+ * could not be spent.
+ *
+ * Two honest limitations remain, both from KV rather than from choice. There is no
+ * compare-and-swap, so two requests racing the same ticket can both read it before either
+ * delete lands; and deletes are eventually consistent, so a spent ticket may briefly still
+ * resolve at another edge. Bounded by the ticket's own TTL, and enormously better than a
+ * seven-day bearer sitting in a URL.
+ *
+ * A failed delete is treated as a failed redemption rather than swallowed. The alternative
+ * leaves the ticket redeemable for the rest of its life in precisely the case where you least
+ * want that; a legitimate stylist just clicks the link again.
  *
  * The character-class check is not cosmetic: without it a caller could pass
- * `../otp:victim@kadwood.com`-style input and use this route to read Studio's other key
- * families out of the shared namespace.
+ * `otp:victim@kadwood.com` and use this route to read Studio's other key families out of the
+ * shared namespace.
  */
 export async function redeemTicket(ticket, kv) {
   if (typeof ticket !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(ticket)) return null;
-  if (!kv || typeof kv.get !== 'function') return null;
+  if (!kv || typeof kv.get !== 'function' || typeof kv.delete !== 'function') return null;
 
   const key = `${TICKET_PREFIX}${ticket}`;
   try {
-    const token = await kv.get(key);
-    if (token === null) return null;
-    // Spend it before returning. A failure here must not hand out the token twice as far as
-    // we can help it, but it also must not deny a legitimate first use, so it is swallowed.
-    try {
-      await kv.delete(key);
-    } catch (error) {
-      console.error('[studioSession] failed to spend ticket:', error);
+    const raw = await kv.get(key);
+    if (raw === null) return null;
+
+    // Spend it before anything can return the token. If this throws we fall to the catch and
+    // hand back nothing.
+    await kv.delete(key);
+
+    const entry = JSON.parse(raw);
+    if (!entry || typeof entry.token !== 'string' || typeof entry.expiresAt !== 'number') {
+      return null;
     }
-    return token;
+    if (Date.now() > entry.expiresAt) return null;
+
+    return entry.token;
   } catch (error) {
-    console.error('[studioSession] ticket lookup failed:', error);
+    console.error('[studioSession] ticket redemption failed:', error);
     return null;
   }
 }

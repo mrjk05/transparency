@@ -1,6 +1,7 @@
 import { renderToReadableStream } from "react-dom/server";
 import { RemixServer } from "@remix-run/react";
 import { isbot } from "isbot";
+import { FRAME_ANCESTORS } from "./utils/responseHeaders";
 
 export default async function handleRequest(
     request,
@@ -32,10 +33,7 @@ export default async function handleRequest(
     // the embedded admin. `frame-ancestors` is ignored in a `<meta>` tag, so it has to be set
     // here rather than in the document head.
     if (!responseHeaders.has("Content-Security-Policy")) {
-        responseHeaders.set(
-            "Content-Security-Policy",
-            "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com"
-        );
+        responseHeaders.set("Content-Security-Policy", FRAME_ANCESTORS);
     }
 
     return new Response(body, {

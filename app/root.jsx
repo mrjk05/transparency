@@ -99,8 +99,14 @@ function StudioChrome({ children }) {
           POST, not a link: signing out changes state, and a GET logout fires from any image
           tag on any page. This is also the only way to drop a session that is not yours —
           Studio's own logout only revokes the token it knows about.
+
+          `reloadDocument` is required, not stylistic. /studio/signed-out is a resource route
+          (a loader returning raw HTML, no default export), and Remix only serves that HTML
+          for document requests. Left to the client router, the POST redirects, the card is
+          fetched, stringified into loaderData and thrown away, and the stylist is left on an
+          empty page still showing this button.
         */}
-        <Form method="post" action="/studio/exit">
+        <Form method="post" action="/studio/exit" reloadDocument>
           <button
             type="submit"
             style={{

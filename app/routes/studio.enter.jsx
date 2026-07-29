@@ -20,8 +20,10 @@ import {
   isTokenRevoked,
   serializeStudioCookie,
 } from '../auth/studioSession.server';
+import { withSecurityHeaders } from '../utils/responseHeaders';
 
 const DEFAULT_DESTINATION = '/app';
+const ORIGIN_PROBE = 'https://transparency.invalid';
 
 export const loader = async ({ request, context }) => {
   const { env } = context.cloudflare;
@@ -71,8 +73,16 @@ export const loader = async ({ request, context }) => {
  * `Location` header quite happily. CR and LF are stripped for a second reason: workerd
  * rejects them outright, turning what should be a 401 page into a 500 from inside the loader.
  *
- * Prefix checks alone are not trusted to be exhaustive, so the result is also resolved
- * against a throwaway origin and required to have stayed there.
+ * Resolving against a throwaway origin is not sufficient either, and the revision that only
+ * did that was worse than doing nothing. WHATWG path normalisation can *manufacture* a
+ * leading `//` from input that had none: `/..//evil.example` normalises to the segments
+ * `['', 'evil.example']`, which serialise as `//evil.example`. The origin of the resolved URL
+ * is still this one — the origin check passes — but the string returned into a `Location`
+ * header is protocol-relative, and the browser resolves it off-site. Returning `next`
+ * untouched, as the first version did, was accidentally safe against this.
+ *
+ * So the guard is applied to the OUTPUT, not the input. That is the value that ends up in
+ * the header, and it is the only value worth checking.
  */
 export function safeDestination(next) {
   if (typeof next !== 'string' || next === '') return DEFAULT_DESTINATION;
@@ -85,9 +95,25 @@ export function safeDestination(next) {
   }
 
   try {
-    const resolved = new URL(cleaned, 'https://transparency.invalid');
-    if (resolved.origin !== 'https://transparency.invalid') return DEFAULT_DESTINATION;
-    return `${resolved.pathname}${resolved.search}`;
+    const resolved = new URL(cleaned, ORIGIN_PROBE);
+    if (resolved.origin !== ORIGIN_PROBE) return DEFAULT_DESTINATION;
+
+    // A Studio hand-off has no business carrying Shopify's embedded parameters. Left in,
+    // `?shop=x` would ride `withSearch` onto every subsequent in-app link and lock the
+    // session out of the Studio branch of `resolveAuth` for the rest of the visit — a
+    // poisoned link that looks to the stylist like their session broke.
+    const search = new URLSearchParams(resolved.search);
+    for (const param of ['host', 'embedded', 'shop', 'id_token']) search.delete(param);
+    const query = search.toString();
+
+    const dest = `${resolved.pathname}${query ? `?${query}` : ''}${resolved.hash}`;
+
+    // The check that matters, on the value actually emitted.
+    if (!dest.startsWith('/') || dest.startsWith('//') || dest.startsWith('/\\')) {
+      return DEFAULT_DESTINATION;
+    }
+
+    return dest;
   } catch {
     return DEFAULT_DESTINATION;
   }
@@ -120,11 +146,11 @@ function denied(message) {
 </html>`,
     {
       status: 401,
-      headers: {
+      headers: withSecurityHeaders({
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
         'Referrer-Policy': 'no-referrer',
-      },
+      }),
     }
   );
 }

@@ -336,3 +336,18 @@ Phase two (not scheduled): supplier and fabric-collection management UI.
    entirely, but a hard reload of `/app/passport/:id` in the Shopify admin still 401s. It now
    says so — root's `ErrorBoundary` renders the reason instead of a blank "Application
    Error" — but the real fix is 7.
+15. **`frame-ancestors` is untested against the real admin.** `main` had no CSP at all, so a
+   missing ancestor origin would render the embedded app as a blank frame — a worse outage
+   than anything T2 fixes, and nothing in the diff or the tests can catch it. **Open the app
+   once in the live Shopify admin before relying on the embedded path.**
+16. **Machine mode and the offline token disagree about `kaddev1`.** `MACHINE_SHOPS` allows
+   it; `getAdminAccessToken` releases the offline token only for the canonical store. So a
+   machine-mode call scoped to the dev store authenticates and then gets an empty order list
+   rather than an error. That is the fail-closed direction and it is deliberate, but it will
+   look like a bug to whoever hits it first.
+17. **`TOKEN_BLACKLIST` also holds Studio's live login secrets.** `otp:<email>` sign-in codes
+   and `webauthn_challenge:*` entries live in the same namespace this Worker now binds, and
+   KV bindings are read/write with no read-only mode. Both lookups here are constrained so
+   neither can be aimed at those keys — the blacklist is read only after a signature check,
+   and ticket names are restricted to `[A-Za-z0-9_-]{32,128}` — but the binding is broader
+   than it needs to be. Splitting revocation into its own namespace is the real fix.
