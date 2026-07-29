@@ -210,6 +210,17 @@ describe('redeemTicket', () => {
     expect(await redeemTicket(TICKET, kv)).toBeNull();
   });
 
+  it('rejects a ticket whose expiry is absurdly far in the future', async () => {
+    // JSON.parse('1e999') is Infinity, not a syntax error, and typeof Infinity === 'number' -
+    // so without a ceiling `{"expiresAt": 1e999}` is a permanent sign-in credential.
+    for (const expiresAt of [Number.POSITIVE_INFINITY, Date.now() + 7 * 24 * 3600 * 1000]) {
+      const kv = fakeKV([], { [`${TICKET_PREFIX}${TICKET}`]: ticketValue('the.jwt', expiresAt) });
+      expect(await redeemTicket(TICKET, kv)).toBeNull();
+    }
+    const raw = fakeKV([], { [`${TICKET_PREFIX}${TICKET}`]: '{"token":"t","expiresAt":1e999}' });
+    expect(await redeemTicket(TICKET, raw)).toBeNull();
+  });
+
   it('rejects a malformed stored value', async () => {
     for (const raw of ['not json', '{}', '{"token":123,"expiresAt":0}', 'null',
                        JSON.stringify({ token: 'x' })]) {

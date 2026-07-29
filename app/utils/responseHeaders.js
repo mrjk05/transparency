@@ -15,9 +15,10 @@
 export const FRAME_ANCESTORS =
   "frame-ancestors 'self' https://admin.shopify.com https://*.myshopify.com";
 
-/** Merge the framing policy into a header bag for a raw Response. */
+/** Merge the framing policy into a header bag for a raw Response. The policy goes last: it is
+ *  not something a caller should be able to weaken by accident. */
 export function withSecurityHeaders(headers = {}) {
-  return { 'Content-Security-Policy': FRAME_ANCESTORS, ...headers };
+  return { ...headers, 'Content-Security-Policy': FRAME_ANCESTORS };
 }
 
 /**
@@ -27,18 +28,37 @@ export function withSecurityHeaders(headers = {}) {
  * auto-submitting form, which reaches a POST endpoint just as easily. `SameSite=Lax` is no
  * help for an action that only *sets* an expiring cookie rather than reading one.
  *
- * `Sec-Fetch-Site` is the direct answer where it exists (`none` is a user-typed URL or
- * bookmark). The `Origin` fallback covers browsers that do not send it.
+ * Three signals, in descending order of reliability, and then a deliberate default:
+ *
+ *   `Sec-Fetch-Site` — the direct answer. `none` means a typed URL or a bookmark.
+ *                      `same-site` is refused: correct today, since the only submitter
+ *                      is this app's own form, but a "sign out of Transparency" control
+ *                      placed on studio.kadwood.com would 403 here with no obvious cause.
+ *   `Origin`         — sent on POST by every browser that matters.
+ *   `Referer`        — the fallback for Safari, which only shipped `Sec-Fetch-*` in 16.4 and
+ *                      has historically omitted `Origin` on same-origin form POSTs.
+ *
+ * If NONE of the three is present, allow it. Failing closed there sounds safer and is not:
+ * the thing being defended is a forced sign-out, which is a nuisance, while the cost is a
+ * Sign out button that silently 403s on somebody's browser and cannot be worked around. A
+ * cross-origin form POST always carries at least one of these; a request carrying none of
+ * them is not a browser doing CSRF.
  */
 export function isSameOriginRequest(request) {
   const site = request.headers.get('Sec-Fetch-Site');
   if (site) return site === 'same-origin' || site === 'none';
 
-  const origin = request.headers.get('Origin');
-  if (!origin) return false;
-  try {
-    return new URL(origin).origin === new URL(request.url).origin;
-  } catch {
-    return false;
+  const expected = new URL(request.url).origin;
+
+  for (const header of ['Origin', 'Referer']) {
+    const value = request.headers.get(header);
+    if (!value) continue;
+    try {
+      return new URL(value).origin === expected;
+    } catch {
+      return false;
+    }
   }
+
+  return true;
 }

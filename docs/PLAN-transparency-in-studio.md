@@ -159,9 +159,22 @@ customer ID and deliver its PDF to a real customer.
 - `/app/*` → order picker, wizard, passport preview — **one** route tree, forked only at
   `resolveAuth()` and the root shell
 
-**The hand-off is a ticket, not the JWT.** Studio writes `studio_ticket:<opaque>` → the
-stylist's JWT into the shared KV namespace with a short TTL and links to it; transparency
-redeems it and deletes it. Putting the JWT in the URL instead was the obvious design and it
+**The hand-off is a ticket, not the JWT.** Studio writes a single-use entry into the shared
+KV namespace and links to it; transparency redeems it and deletes it. The exact contract,
+because this is the only place the other repo can read it:
+
+| | |
+|---|---|
+| Key | `studio_ticket:<opaque>` where `<opaque>` matches `[A-Za-z0-9_-]{32,128}` — anything else is rejected without a KV read, so the ticket can never be aimed at another key family in this shared namespace |
+| Value | `{"token": "<the stylist's JWT>", "expiresAt": <epoch milliseconds>}` — **JSON, not the bare token** |
+| TTL | Studio should also pass KV's own `expirationTtl` (60s is ample). `expiresAt` is re-checked on redemption regardless, because transparency is the side that depends on the ticket being short-lived |
+| Link | `GET /studio/enter?ticket=<opaque>&next=<same-origin path>` |
+
+A bare JWT as the value fails `JSON.parse`, and it fails *after* the ticket has been spent —
+so the stylist gets "invalid, expired, or already used" and the ticket is gone. Get the shape
+right the first time.
+
+Putting the JWT in the URL instead was the obvious design and it
 is wrong: that token is Studio's live API bearer, good for seven days against
 `kadwood-ai-backend`, and this Worker logs at `head_sampling_rate = 1` with `persist = true`,
 so every sign-in URL is retained. Anyone able to read those logs would get full Studio API

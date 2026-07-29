@@ -18,14 +18,16 @@
 /**
  * Name of the session cookie.
  *
- * The `__Host-` prefix is load-bearing, not decoration. This app sits at
- * transparency.kadwood.com alongside studio., members., ai-images. and sync. — and an XSS or
- * takeover on ANY of those can otherwise write
- * `Set-Cookie: kadwood_studio_session=<their JWT>; Domain=.kadwood.com`. `readStudioCookie`
- * returns the first match in the header and browsers order equal-path cookies by creation
- * time, so the injected one can quietly win and this app has no way to tell them apart.
- * With the prefix, browsers refuse any `Set-Cookie` for this name that carries a `Domain`,
- * which makes the shadowing impossible rather than merely unlikely.
+ * The `__Host-` prefix costs nothing today and is load-bearing the moment the plan's custom
+ * domain lands. Right now the app is served from `kadwood-transparency-engine.
+ * jinskaduthodil.workers.dev`, and `workers.dev` is on the Public Suffix List, so no sibling
+ * Worker can set a cookie for it anyway. Once this moves to `transparency.kadwood.com`,
+ * alongside studio., members., ai-images. and sync., an XSS or takeover on ANY of those
+ * could otherwise write `Set-Cookie: kadwood_studio_session=<their JWT>; Domain=.kadwood.com`
+ * — and `readStudioCookie` returns the first match in the header, while browsers order
+ * equal-path cookies by creation time, so the injected one can quietly win with nothing here
+ * able to tell them apart. With the prefix, browsers refuse any `Set-Cookie` for this name
+ * that carries a `Domain` at all.
  */
 export const STUDIO_COOKIE = '__Host-kadwood_studio_session';
 
@@ -41,6 +43,19 @@ export const STUDIO_COOKIE = '__Host-kadwood_studio_session';
  * access to passports.
  */
 export const TICKET_PREFIX = 'studio_ticket:';
+
+/**
+ * Ceiling on how far in the future a ticket may claim to expire.
+ *
+ * The expiry check needs an upper bound as well as a lower one. `JSON.parse('1e999')` yields
+ * `Infinity` rather than a syntax error, and `typeof Infinity === 'number'`, so an
+ * `expiresAt` of `1e999` sails through the type check and `Date.now() > Infinity` is never
+ * true — a permanent sign-in credential sitting in KV, which is precisely the scenario the
+ * local enforcement exists to catch. A merely absurd value (`now + 7 days`) has the same
+ * effect without needing a parser quirk. Ten minutes is far beyond the 60 seconds the
+ * hand-off needs and leaves ample room for clock skew between edges.
+ */
+const MAX_TICKET_AGE_MS = 10 * 60 * 1000;
 
 /**
  * Verify a Studio JWT.
@@ -171,7 +186,9 @@ export async function redeemTicket(ticket, kv) {
     if (!entry || typeof entry.token !== 'string' || typeof entry.expiresAt !== 'number') {
       return null;
     }
-    if (Date.now() > entry.expiresAt) return null;
+    const now = Date.now();
+    if (now > entry.expiresAt) return null;
+    if (entry.expiresAt - now > MAX_TICKET_AGE_MS) return null;
 
     return entry.token;
   } catch (error) {
